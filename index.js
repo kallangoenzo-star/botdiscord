@@ -200,7 +200,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.commandName === 'order') {
     const embed = new EmbedBuilder()
       .setColor(0x8b5cf6)
-      .setImage(`${SITE_URL}/Screenshot_3.png`)
+      .setImage('https://i.imgur.com/KhQRZ4n.png')
       .setDescription(
         `Aqui você cria algo que é só seu — um cargo com o nome e a cor que quiser, visível pra todo mundo no servidor.\n\n` +
         `**Como funciona?**\n` +
