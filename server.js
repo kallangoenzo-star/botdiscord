@@ -65,6 +65,25 @@ function saveDB(data) {
   fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
 
+async function aplicarCargoCompartilhado(userId, roleId, membros) {
+  if (!roleId || !Array.isArray(membros) || !membros.length) return;
+
+  const ids = [...new Set(membros.filter(Boolean))];
+  for (const targetId of ids) {
+    try {
+      const res = await fetch(
+        `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${targetId}/roles/${roleId}`,
+        { method: 'PUT', headers: headersBot }
+      );
+      if (!res.ok) {
+        console.warn(`[Cargo Compartilhado] Falha ao aplicar cargo para ${targetId}:`, await res.text());
+      }
+    } catch (err) {
+      console.warn(`[Cargo Compartilhado] Erro ao aplicar cargo para ${targetId}:`, err.message);
+    }
+  }
+}
+
 const headersBot = {
   Authorization: `Bot ${DISCORD_TOKEN}`,
   'Content-Type': 'application/json',
@@ -112,26 +131,35 @@ app.use(security.sessionTimeout);
 
 // ---------- 1) Login: manda pro Discord autorizar ----------
 app.get('/auth/login', (req, res) => {
-  const state = security.generateOAuth2State();
-  req.session.oauthState = state;
-
-  req.session.save((err) => {
+  req.session.regenerate((err) => {
     if (err) {
-      console.error('[OAuth2 Login] Falha ao salvar sessão:', err);
+      console.error('[OAuth2 Login] Falha ao regenerar sessão:', err);
       return res.status(500).send('Erro ao iniciar login do Discord.');
     }
 
-    console.log('[OAuth2 Login] State gerado e persistido:', state.slice(0, 10) + '...');
+    const state = security.generateOAuth2State();
+    req.session.oauthState = state;
+    req.session.user = null;
+    req.session.csrfToken = null;
 
-    const params = new URLSearchParams({
-      client_id: CLIENT_ID,
-      redirect_uri: REDIRECT_URI,
-      response_type: 'code',
-      scope: 'identify',
-      state,
+    req.session.save((saveErr) => {
+      if (saveErr) {
+        console.error('[OAuth2 Login] Falha ao salvar sessão:', saveErr);
+        return res.status(500).send('Erro ao iniciar login do Discord.');
+      }
+
+      console.log('[OAuth2 Login] State gerado e persistido:', state.slice(0, 10) + '...');
+
+      const params = new URLSearchParams({
+        client_id: CLIENT_ID,
+        redirect_uri: REDIRECT_URI,
+        response_type: 'code',
+        scope: 'identify',
+        state,
+      });
+
+      res.redirect(`https://discord.com/api/oauth2/authorize?${params.toString()}`);
     });
-
-    res.redirect(`https://discord.com/api/oauth2/authorize?${params.toString()}`);
   });
 });
 
@@ -358,7 +386,8 @@ app.post('/api/vip', async (req, res) => {
       // Salva no banco de dados pra manter consistência
       db[userId] = { roleId, membros: db[userId]?.membros || [] };
       saveDB(db);
-      
+      await aplicarCargoCompartilhado(userId, roleId, db[userId].membros);
+
       // 4. AUDIT LOG
       await security.logAudit('Cargo Atualizado', userId, { nomeAntigo: role.name, nomeNovo: nomeClean, roleId, cor });
 
@@ -391,6 +420,7 @@ app.post('/api/vip', async (req, res) => {
 
       db[userId] = { roleId, membros: [] };
       saveDB(db);
+      await aplicarCargoCompartilhado(userId, roleId, db[userId].membros);
 
       // 4. AUDIT LOG
       await security.logAudit('Cargo Criado', userId, { nome: nomeClean, roleId, cor });
@@ -502,10 +532,9 @@ app.post('/api/vip/compartilhar', async (req, res) => {
     saveDB(db);
 
     const membro = await buscarMembro(targetId);
-    
-    // Audit log
+
     await security.logAudit('Cargo Compartilhado', userId, { targetId, targetNome: membro?.displayName });
-    
+
     res.json({ ok: true, membro });
   } catch (err) {
     console.error(err);
