@@ -131,20 +131,58 @@ client.once(Events.ClientReady, async () => {
 
 // ---------- Comandos /order e /orderxp ----------
 client.on(Events.InteractionCreate, async (interaction) => {
+  // Botão "Ver meu XP" do /order
+  if (interaction.isButton() && interaction.customId === 'btn_xp') {
+    try {
+      const { xp, level } = await getXP(interaction.user.id);
+      const faltam = Math.max(0, XP_PARA_VIP - xp);
+      const temVip = xp >= XP_PARA_VIP;
+      const pct = Math.min(100, Math.round((xp / XP_PARA_VIP) * 100));
+
+      const embed = new EmbedBuilder()
+        .setColor(temVip ? 0x8b5cf6 : 0x4fd1c5)
+        .setTitle(`XP de ${interaction.member?.displayName || interaction.user.username}`)
+        .addFields(
+          { name: 'Nível', value: String(level), inline: true },
+          { name: 'XP Total', value: String(xp), inline: true },
+          { name: temVip ? 'Status' : 'Faltam', value: temVip ? '✅ VIP desbloqueado!' : `${faltam} XP para o VIP`, inline: true },
+          { name: 'Progresso', value: `${'█'.repeat(Math.round(pct / 10))}${'░'.repeat(10 - Math.round(pct / 10))} ${pct}%`, inline: false },
+        );
+
+      await interaction.reply({ embeds: [embed], flags: 64 });
+    } catch (err) {
+      if (err.code !== 10062) console.error('[btn_xp] Erro:', err);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   // /order — abre o painel VIP
   if (interaction.commandName === 'order') {
     const embed = new EmbedBuilder()
-      .setTitle('Seu Cargo VIP')
-      .setDescription('Clique no botão abaixo pra escolher o nome e a cor do seu cargo pessoal.')
-      .setColor(0x8b5cf6);
+      .setColor(0x8b5cf6)
+      .setImage(`${SITE_URL}/screenshot_2.png`)
+      .setDescription(
+        `Aqui você cria algo que é só seu — um cargo com o nome e a cor que quiser, visível pra todo mundo no servidor.\n\n` +
+        `**Como funciona?**\n` +
+        `Acumule XP conversando no servidor. Ao atingir **3.000 XP**, o cargo VIP é desbloqueado automaticamente e você pode personalizar tudo pelo painel.\n\n` +
+        `**Cargo personalizado** — Nome e cor exclusivos, aparecem na sua tag e na lista de membros.\n` +
+        `**Compartilhar** — Passe o cargo pra até 10 pessoas da sua escolha.\n` +
+        `**Call privada** — Crie uma sala de voz que só quem tem seu cargo consegue entrar.\n\n` +
+        `Veja seu progresso com \`/orderxp\` a qualquer momento.`
+      )
+      .setFooter({ text: 'Seu cargo. Seu estilo.' });
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setLabel('Abrir Painel VIP')
+        .setLabel('🎨 Abrir Painel')
         .setStyle(ButtonStyle.Link)
-        .setURL(SITE_URL)
+        .setURL(SITE_URL),
+      new ButtonBuilder()
+        .setLabel('📊 Ver meu XP')
+        .setStyle(ButtonStyle.Secondary)
+        .setCustomId('btn_xp')
     );
 
     try {
