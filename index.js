@@ -141,7 +141,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     const logId = interaction.customId.replace('painel_log:', '');
-    const dados = security.getPainelLogData(logId);
+    const dados = await security.getPainelLogData(logId);
 
     if (!dados) {
       return interaction.reply({ content: '⚠️ Dados expirados ou não encontrados (máx. 1 hora).', flags: 64 });

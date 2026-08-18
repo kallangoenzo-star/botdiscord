@@ -128,37 +128,51 @@ async function logAudit(action, userId, details) {
 }
 
 // ========== 5b. LOG DE ABERTURA DE PAINEL (dados sensíveis protegidos) ==========
-// Guarda detalhes sensíveis em memória por 1 hora — liberados só via DM pro admin
-const painelLogStore = new Map();
-
-// Limpa entradas antigas a cada hora
-setInterval(() => {
-  const agora = Date.now();
-  for (const [key, entry] of painelLogStore.entries()) {
-    if (agora - entry.ts > 3600000) painelLogStore.delete(key);
-  }
-}, 3600000);
-
+// ========== 5b. LOG DE ABERTURA DE PAINEL (dados sensíveis protegidos via Turso) ==========
 async function logAuditPainel(userId, username, ip, pais, cidade, userAgent) {
   const LOGS_CHANNEL_ID = '1539053493979971646';
   const timestamp = new Date().toISOString();
-
-  // Gera um ID único pra esse acesso
   const logId = `painel_${userId}_${Date.now()}`;
+  const expiraEm = Date.now() + 5 * 60 * 1000; // 5 minutos
 
-  // Guarda dados sensíveis em memória
-  painelLogStore.set(logId, {
-    ts: Date.now(),
-    userId,
-    username,
-    ip,
-    pais,
-    cidade,
-    userAgent,
-    timestamp,
-  });
+  // Salva dados sensíveis no Turso
+  try {
+    const { createClient } = require('@libsql/client');
+    const db = createClient({
+      url: process.env.TURSO_URL,
+      authToken: process.env.TURSO_AUTH_TOKEN,
+    });
 
-  // Log público — sem IP, sem dados sensíveis
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS painel_logs (
+        log_id     TEXT PRIMARY KEY,
+        user_id    TEXT,
+        username   TEXT,
+        ip         TEXT,
+        pais       TEXT,
+        cidade     TEXT,
+        user_agent TEXT,
+        timestamp  TEXT,
+        expira_em  INTEGER
+      )
+    `);
+
+    await db.execute({
+      sql: `INSERT INTO painel_logs (log_id, user_id, username, ip, pais, cidade, user_agent, timestamp, expira_em)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [logId, userId, username, ip, pais, cidade, userAgent, timestamp, expiraEm],
+    });
+
+    // Limpa logs expirados
+    await db.execute({
+      sql: 'DELETE FROM painel_logs WHERE expira_em < ?',
+      args: [Date.now()],
+    });
+  } catch (err) {
+    console.error('[PainelLog] Erro ao salvar no Turso:', err.message);
+  }
+
+  // Log público sem dados sensíveis
   const message = {
     embeds: [{
       title: '🖥️ Abertura de Painel VIP',
@@ -169,7 +183,6 @@ async function logAuditPainel(userId, username, ip, pais, cidade, userAgent) {
       ],
       color: 3066993,
       timestamp,
-      footer: { text: 'IP e detalhes disponíveis apenas para o admin' },
     }],
     components: [{
       type: 1,
@@ -199,8 +212,34 @@ async function logAuditPainel(userId, username, ip, pais, cidade, userAgent) {
   }
 }
 
-function getPainelLogData(logId) {
-  return painelLogStore.get(logId) || null;
+async function getPainelLogData(logId) {
+  try {
+    const { createClient } = require('@libsql/client');
+    const db = createClient({
+      url: process.env.TURSO_URL,
+      authToken: process.env.TURSO_AUTH_TOKEN,
+    });
+
+    const res = await db.execute({
+      sql: 'SELECT * FROM painel_logs WHERE log_id = ? AND expira_em > ?',
+      args: [logId, Date.now()],
+    });
+
+    if (!res.rows.length) return null;
+    const r = res.rows[0];
+    return {
+      userId: r.user_id,
+      username: r.username,
+      ip: r.ip,
+      pais: r.pais,
+      cidade: r.cidade,
+      userAgent: r.user_agent,
+      timestamp: r.timestamp,
+    };
+  } catch (err) {
+    console.error('[PainelLog] Erro ao buscar no Turso:', err.message);
+    return null;
+  }
 }
 
 // ========== 6. HTTPS CHECK ==========
