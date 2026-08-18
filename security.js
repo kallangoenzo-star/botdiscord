@@ -3,37 +3,45 @@ const crypto = require('crypto');
 // ========== 1. RATE LIMITING ==========
 const rateLimitStore = new Map();
 const MAX_REQUESTS_PER_10S = 5;
-const MAX_UPDATES_PER_HOUR = 20;
+
+// Limites por hora para cada ação POST
+const HOURLY_LIMITS = {
+  'vip-update': 20,
+  'call-update': 10,
+  'compartilhar': 15,
+  'revogar': 15,
+  'buscar-membros': 30,
+  'api-me': 60,
+};
 
 function checkRateLimit(userId, action = 'default') {
   const now = Date.now();
   const key = `${userId}-${action}`;
-  
+
   if (!rateLimitStore.has(key)) {
     rateLimitStore.set(key, { requests: [], lastHour: [] });
   }
-  
+
   const record = rateLimitStore.get(key);
-  
-  // Limpa requisições antigas (> 10s)
+
+  // Limpa requisições antigas
   record.requests = record.requests.filter(t => now - t < 10000);
-  
-  // Limpa log de última hora
   record.lastHour = record.lastHour.filter(t => now - t < 3600000);
-  
-  // Verifica limite de 10s
+
+  // Limite de 10s
   if (record.requests.length >= MAX_REQUESTS_PER_10S) {
     return { allowed: false, reason: 'Muitos requests em pouco tempo. Tenta de novo em alguns segundos.' };
   }
-  
-  // Verifica limite de 1h pra updates (POST)
-  if (action === 'vip-update' && record.lastHour.length >= MAX_UPDATES_PER_HOUR) {
-    return { allowed: false, reason: 'Limite de 20 atualizações por hora atingido.' };
+
+  // Limite horário por ação
+  const hourlyLimit = HOURLY_LIMITS[action];
+  if (hourlyLimit && record.lastHour.length >= hourlyLimit) {
+    return { allowed: false, reason: `Limite de ${hourlyLimit} ações por hora atingido.` };
   }
-  
+
   record.requests.push(now);
-  if (action === 'vip-update') record.lastHour.push(now);
-  
+  if (hourlyLimit) record.lastHour.push(now);
+
   return { allowed: true };
 }
 
@@ -55,7 +63,17 @@ function generateCSRFToken() {
 }
 
 function verifyCSRFToken(token, sessionToken) {
-  return token && sessionToken && token === sessionToken;
+  if (!token || !sessionToken) return false;
+  if (typeof token !== 'string' || typeof sessionToken !== 'string') return false;
+  // Usa timingSafeEqual para prevenir timing attacks
+  try {
+    const a = Buffer.from(token, 'utf8');
+    const b = Buffer.from(sessionToken, 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
 }
 
 // ========== 3. INPUT SANITIZATION ==========
@@ -63,8 +81,10 @@ function sanitizeInput(input) {
   if (typeof input !== 'string') return '';
   return input
     .trim()
-    .replace(/[\x00-\x1F\x7F]/g, '') // Remove caracteres de controle
-    .slice(0, 100); // Limita tamanho
+    .replace(/[\x00-\x1F\x7F]/g, '')       // Remove caracteres de controle
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')  // Remove zero-width characters
+    .replace(/\u202E/g, '')                  // Remove RTL override
+    .slice(0, 100);
 }
 
 function validateHexColor(hex) {
@@ -90,26 +110,39 @@ async function verifyUserHasRole(userId, roleId, headers) {
   }
 }
 
+// Verifica se usuário tem o cargo VIP de acesso
+async function verifyUserHasVipAccess(userId, headers) {
+  const VIP_ROLE_ID = process.env.VIP_ROLE_ID;
+  if (!VIP_ROLE_ID) return false;
+  return verifyUserHasRole(userId, VIP_ROLE_ID, headers);
+}
+
 // ========== 5. AUDIT LOGGING ==========
 async function logAudit(action, userId, details) {
-  const LOGS_CHANNEL_ID = '1539053493979971646';
-  
+  const LOGS_CHANNEL_ID = process.env.LOGS_CHANNEL_ID || '1539053493979971646';
   const timestamp = new Date().toISOString();
+
+  // Sanitiza os valores dos detalhes antes de logar
+  const safeDetails = {};
+  for (const [key, value] of Object.entries(details)) {
+    safeDetails[key] = sanitizeInput(String(value)).slice(0, 200);
+  }
+
   const message = {
     content: `**[${action}]** <@${userId}> | ${timestamp}`,
     embeds: [{
       title: `Ação: ${action}`,
       description: `**Usuário:** <@${userId}> (${userId})\n**Timestamp:** ${timestamp}`,
-      fields: Object.entries(details).map(([key, value]) => ({
+      fields: Object.entries(safeDetails).map(([key, value]) => ({
         name: key,
         value: String(value).slice(0, 1024),
         inline: false,
       })),
       color: action.includes('Erro') ? 16711680 : 3066993,
-      timestamp: new Date().toISOString(),
+      timestamp,
     }],
   };
-  
+
   try {
     await fetch(
       `https://discord.com/api/v10/channels/${LOGS_CHANNEL_ID}/messages`,
@@ -127,15 +160,16 @@ async function logAudit(action, userId, details) {
   }
 }
 
-// ========== 5b. LOG DE ABERTURA DE PAINEL (dados sensíveis protegidos) ==========
-// ========== 5b. LOG DE ABERTURA DE PAINEL (dados sensíveis protegidos via Turso) ==========
+// ========== 5b. LOG DE ABERTURA DE PAINEL (dados sensíveis no Turso) ==========
 async function logAuditPainel(userId, username, ip, pais, cidade, userAgent) {
-  const LOGS_CHANNEL_ID = '1539053493979971646';
+  const LOGS_CHANNEL_ID = process.env.LOGS_CHANNEL_ID || '1539053493979971646';
   const timestamp = new Date().toISOString();
   const logId = `painel_${userId}_${Date.now()}`;
-  const expiraEm = Date.now() + 5 * 60 * 1000; // 5 minutos
+  const expiraEm = Date.now() + 60 * 60 * 1000; // 1 hora
 
-  // Salva dados sensíveis no Turso
+  // Valida IP antes de usar — previne path injection na URL da geolocalização
+  const ipSeguro = /^[\d.:a-fA-F]+$/.test(ip) ? ip : 'desconhecido';
+
   try {
     const { createClient } = require('@libsql/client');
     const db = createClient({
@@ -160,7 +194,7 @@ async function logAuditPainel(userId, username, ip, pais, cidade, userAgent) {
     await db.execute({
       sql: `INSERT INTO painel_logs (log_id, user_id, username, ip, pais, cidade, user_agent, timestamp, expira_em)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [logId, userId, username, ip, pais, cidade, userAgent, timestamp, expiraEm],
+      args: [logId, userId, username, ipSeguro, pais, cidade, userAgent.slice(0, 300), timestamp, expiraEm],
     });
 
     // Limpa logs expirados
@@ -172,7 +206,7 @@ async function logAuditPainel(userId, username, ip, pais, cidade, userAgent) {
     console.error('[PainelLog] Erro ao salvar no Turso:', err.message);
   }
 
-  // Log público sem dados sensíveis
+  // Log público — sem IP, sem user-agent
   const message = {
     embeds: [{
       title: '🖥️ Abertura de Painel VIP',
@@ -258,7 +292,7 @@ function sessionTimeout(req, res, next) {
     const now = Date.now();
     if (!req.session.lastActivity) {
       req.session.lastActivity = now;
-    } else if (now - req.session.lastActivity > 30 * 60 * 1000) { // 30min
+    } else if (now - req.session.lastActivity > 30 * 60 * 1000) {
       req.session.destroy(() => {
         return res.status(401).json({ erro: 'Sessão expirada por inatividade.' });
       });
@@ -275,7 +309,6 @@ function generateOAuth2State() {
 }
 
 function verifyOAuth2State(state, sessionState) {
-  // Validação simples e segura do state
   if (!state || !sessionState) return false;
   if (typeof state !== 'string' || typeof sessionState !== 'string') return false;
 
@@ -294,33 +327,27 @@ function verifyOAuth2State(state, sessionState) {
 
 // ========== 9. SECURITY HEADERS ==========
 function securityHeaders(req, res, next) {
-  // Content Security Policy - Bloqueia conteúdo malicioso
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com; img-src 'self' https://cdn.discordapp.com https://discordapp.com data:; connect-src 'self' https://discord.com https://cdn.discordapp.com");
-  
-  // Força HTTPS por 1 ano
+  // CSP sem unsafe-inline para scripts — usa nonce seria ideal mas exige refactor do HTML
+  // Mantemos unsafe-inline apenas para styles (necessário pelo CSS inline do app)
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self'; " +
+    "style-src 'self' 'unsafe-inline' fonts.googleapis.com; " +
+    "font-src fonts.gstatic.com; " +
+    "img-src 'self' https://cdn.discordapp.com https://discordapp.com https://raw.githubusercontent.com data:; " +
+    "connect-src 'self' https://discord.com https://cdn.discordapp.com"
+  );
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-  
-  // Impede clickjacking
   res.setHeader('X-Frame-Options', 'DENY');
-  
-  // Previne MIME type sniffing
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  
-  // Ativa proteção XSS do navegador
   res.setHeader('X-XSS-Protection', '1; mode=block');
-  
-  // Desabilita referrer info
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  
-  // Permissions Policy (ex-Feature-Policy)
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), payment=(), usb=()');
-  
   next();
 }
 
 // ========== 10. VALIDATE REDIRECT URI ==========
 function validateRedirectURI(redirectUri, allowedUri) {
-  // Apenas permite o redirect URI exato que foi registrado
   return redirectUri === allowedUri;
 }
 
@@ -332,6 +359,7 @@ module.exports = {
   validateHexColor,
   validateUserId,
   verifyUserHasRole,
+  verifyUserHasVipAccess,
   logAudit,
   logAuditPainel,
   getPainelLogData,
