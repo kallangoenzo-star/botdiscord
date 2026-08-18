@@ -112,53 +112,63 @@ app.use(security.sessionTimeout);
 
 // ---------- 1) Login: manda pro Discord autorizar ----------
 app.get('/auth/login', (req, res) => {
-  // Gera OAuth2 State para proteção CSRF no fluxo OAuth
   const state = security.generateOAuth2State();
   req.session.oauthState = state;
-  
-  console.log('[OAuth2 Login] State gerado e armazenado:', state.slice(0, 10) + '...');
 
-  const params = new URLSearchParams({
-    client_id: CLIENT_ID,
-    redirect_uri: REDIRECT_URI,
-    response_type: 'code',
-    scope: 'identify',
-    state, // Parâmetro obrigatório para proteção
+  req.session.save((err) => {
+    if (err) {
+      console.error('[OAuth2 Login] Falha ao salvar sessão:', err);
+      return res.status(500).send('Erro ao iniciar login do Discord.');
+    }
+
+    console.log('[OAuth2 Login] State gerado e persistido:', state.slice(0, 10) + '...');
+
+    const params = new URLSearchParams({
+      client_id: CLIENT_ID,
+      redirect_uri: REDIRECT_URI,
+      response_type: 'code',
+      scope: 'identify',
+      state,
+    });
+
+    res.redirect(`https://discord.com/api/oauth2/authorize?${params.toString()}`);
   });
-  
-  res.redirect(`https://discord.com/api/oauth2/authorize?${params.toString()}`);
 });
 
 // ---------- 2) Callback: troca o code por token e pega o usuário ----------
 app.get('/auth/callback', async (req, res) => {
   const { code, state } = req.query;
-  
+  const sessionState = req.session.oauthState;
+
   console.log('[OAuth2 Callback]', {
     codeRecebido: !!code,
     stateRecebido: !!state,
-    stateNaSessao: !!req.session.oauthState,
-    stateRecebidoValor: state ? state.slice(0, 10) + '...' : 'null',
-    stateNaSessaoValor: req.session.oauthState ? req.session.oauthState.slice(0, 10) + '...' : 'null',
+    stateNaSessao: !!sessionState,
+    stateRecebidoValor: state ? String(state).slice(0, 10) + '...' : 'null',
+    stateNaSessaoValor: sessionState ? String(sessionState).slice(0, 10) + '...' : 'null',
   });
-  
-  // 1. Valida OAuth2 State parameter (proteção contra CSRF no fluxo OAuth)
+
   if (!state) {
     console.error('[OAuth2] State parameter não recebido do Discord');
     await security.logAudit('OAuth2 Erro', 'unknown', { motivo: 'State parameter não recebido' });
     return res.redirect('/?erro=state_invalido');
   }
 
-  if (!req.session.oauthState) {
+  if (!sessionState) {
     console.error('[OAuth2] State não armazenado na sessão');
     await security.logAudit('OAuth2 Erro', 'unknown', { motivo: 'State não na sessão' });
     return res.redirect('/?erro=state_invalido');
   }
 
-  // Valida que o state corresponde
-  if (!security.verifyOAuth2State(state, req.session.oauthState)) {
-    console.error('[OAuth2] State mismatch', { esperado: req.session.oauthState.slice(0, 10), recebido: state.slice(0, 10) });
+  if (!security.verifyOAuth2State(String(state), String(sessionState))) {
+    console.error('[OAuth2] State mismatch', {
+      esperado: String(sessionState).slice(0, 10),
+      recebido: String(state).slice(0, 10),
+      tamEsperado: String(sessionState).length,
+      tamRecebido: String(state).length,
+    });
     await security.logAudit('OAuth2 State Mismatch', 'unknown', { motivo: 'State não corresponde' });
-    return res.redirect('/?erro=state_falhou');
+    return res.redirect('/?erro=state_invalido');
   }
   
   // Limpa state após validação bem-sucedida
