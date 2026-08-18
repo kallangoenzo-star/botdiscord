@@ -14,12 +14,14 @@ console.log('\n🚀 Iniciando Bot Discord + Servidor Web...\n');
 const bot = spawn('node', ['index.js'], {
   stdio: 'inherit',
   shell: true,
+  env: process.env,
 });
 
 // Inicia Servidor Web (server.js)
 const server = spawn('node', ['server.js'], {
   stdio: 'inherit',
   shell: true,
+  env: process.env,
 });
 
 // Se um deles encerrar, fecha ambos
