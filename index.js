@@ -366,10 +366,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // /boosterembed — envia mensagem embed no canal de Booster (só admin)
   if (interaction.commandName === 'boosterembed') {
-    const ADMIN_ID = process.env.ADMIN_ID;
+    const MY_ID = '609781285891735554';
     const BOOSTER_CHANNEL_ID = '1539158906171817994';
 
-    if (interaction.user.id !== ADMIN_ID) {
+    if (interaction.user.id !== MY_ID) {
       return interaction.reply({ content: '❌ Você não tem permissão para usar esse comando.', flags: 64 });
     }
 
@@ -380,37 +380,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       const embed = new EmbedBuilder()
-        .setColor(0xff6b9d)
-        .setTitle('🚀 BOOSTER - Benefícios Exclusivos')
+        .setColor(0x8b5cf6)
+        .setTitle('✨ BOOSTER')
         .setDescription(
-          'Torne-se um Booster do servidor e desfrute de benefícios exclusivos que valorizam sua experiência!'
+          'Torne-se um Booster do servidor e mostre sua superioridade perante os membros comuns!'
         )
-        .setThumbnail('https://i.imgur.com/KhQRZ4n.png')
+        .setImage('https://i.imgur.com/mYrTpmp.jpeg')
         .addFields(
           {
-            name: '📸 Envio de Mídias',
-            value: 'Liberdade para postar imagens e GIFs no chat geral.',
+            name: '📸 Envio de mídias',
+            value: 'Pode mandar foto e GIF no chat geral sem restrição.',
             inline: false,
           },
           {
-            name: '🎨 Cargo Próprio',
-            value: 'Crie e personalize seu próprio cargo com nome e cor exclusivos.',
+            name: '🎨 Cargo próprio',
+            value: 'Cria um cargo personalizado com nome e cor do jeito que quiser.',
             inline: false,
           },
           {
-            name: '✨ Destaque Visual',
-            value: 'Seu nome destacado no chat e na lista de membros.',
+            name: '✨ Destaque visual',
+            value: 'Seu nome fica destacado no chat e na lista de membros.',
             inline: false,
           },
         )
-        .setFooter({ text: 'Apoie o servidor e ganhe recompensas especiais!' })
+        .setFooter({ text: 'Tamo junto tropa. Peace 💜 Capiche.' })
         .setTimestamp();
 
       await boosterChannel.send({ embeds: [embed] });
-      await interaction.reply({ content: '✅ Mensagem de Booster enviada com sucesso!', flags: 64 });
+      await interaction.reply({ content: '✅ Mensagem enviada!', flags: 64 });
     } catch (err) {
       console.error('[BoosterEmbed] Erro:', err);
-      await interaction.reply({ content: '❌ Erro ao enviar mensagem de Booster.', flags: 64 });
+      await interaction.reply({ content: '❌ Erro ao enviar mensagem.', flags: 64 });
     }
   }
 
