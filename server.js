@@ -84,6 +84,52 @@ async function aplicarCargoCompartilhado(userId, roleId, membros) {
   }
 }
 
+async function reposicionarCargoVIPAcimaDosAntigos(roleId) {
+  if (!roleId) return;
+
+  try {
+    const rolesRes = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/roles`, { headers: headersBot });
+    if (!rolesRes.ok) {
+      console.warn('[VIP Order] Falha ao buscar roles do servidor:', await rolesRes.text());
+      return;
+    }
+
+    const roles = await rolesRes.json();
+    const db = loadDB();
+    const idsVip = Object.values(db)
+      .map((registro) => registro?.roleId)
+      .filter(Boolean)
+      .filter((id) => id !== roleId);
+
+    const vipRoles = roles.filter((role) => idsVip.includes(role.id));
+    if (!vipRoles.length) return;
+
+    const maiorPosicaoVip = Math.max(...vipRoles.map((role) => Number(role.position) || 0));
+    const posAtual = Number(roles.find((role) => role.id === roleId)?.position || 0);
+    const novaPosicao = maiorPosicaoVip + 1;
+
+    if (posAtual === novaPosicao) return;
+
+    const moveRes = await fetch(
+      `https://discord.com/api/v10/guilds/${GUILD_ID}/roles/${roleId}`,
+      {
+        method: 'PATCH',
+        headers: headersBot,
+        body: JSON.stringify({ position: novaPosicao }),
+      }
+    );
+
+    if (!moveRes.ok) {
+      console.warn('[VIP Order] Falha ao reposicionar cargo VIP:', await moveRes.text());
+      return;
+    }
+
+    console.log(`[VIP Order] Cargo ${roleId} movido para a posição ${novaPosicao} acima dos VIPs antigos.`);
+  } catch (err) {
+    console.warn('[VIP Order] Erro ao reposicionar cargo VIP:', err.message);
+  }
+}
+
 const headersBot = {
   Authorization: `Bot ${DISCORD_TOKEN}`,
   'Content-Type': 'application/json',
@@ -386,6 +432,7 @@ app.post('/api/vip', async (req, res) => {
       // Salva no banco de dados pra manter consistência
       db[userId] = { roleId, membros: db[userId]?.membros || [] };
       saveDB(db);
+      await reposicionarCargoVIPAcimaDosAntigos(roleId);
       await aplicarCargoCompartilhado(userId, roleId, db[userId].membros);
 
       // 4. AUDIT LOG
@@ -420,6 +467,7 @@ app.post('/api/vip', async (req, res) => {
 
       db[userId] = { roleId, membros: [] };
       saveDB(db);
+      await reposicionarCargoVIPAcimaDosAntigos(roleId);
       await aplicarCargoCompartilhado(userId, roleId, db[userId].membros);
 
       // 4. AUDIT LOG
