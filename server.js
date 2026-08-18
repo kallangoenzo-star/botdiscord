@@ -54,10 +54,8 @@ const db = createClient({
   authToken: TURSO_AUTH_TOKEN,
 });
 
-// Garante que a tabela existe ao iniciar
+// Garante que as tabelas existem ao iniciar
 async function initDB() {
-  console.log('[DB] TURSO_URL:', TURSO_URL ? TURSO_URL.slice(0, 30) + '...' : 'NÃO DEFINIDO');
-  console.log('[DB] TURSO_AUTH_TOKEN:', TURSO_AUTH_TOKEN ? 'definido (' + TURSO_AUTH_TOKEN.length + ' chars)' : 'NÃO DEFINIDO');
   await db.execute(`
     CREATE TABLE IF NOT EXISTS vip_roles (
       user_id   TEXT PRIMARY KEY,
@@ -66,7 +64,14 @@ async function initDB() {
       membros   TEXT DEFAULT '[]'
     )
   `);
-  console.log('[DB] Tabela vip_roles pronta.');
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS xp (
+      user_id  TEXT PRIMARY KEY,
+      xp       INTEGER DEFAULT 0,
+      level    INTEGER DEFAULT 0
+    )
+  `);
+  console.log('[DB] Tabelas prontas.');
 }
 
 // Busca registro de um usuário
@@ -532,6 +537,11 @@ app.post('/api/vip/compartilhar', async (req, res) => {
     return res.status(429).json({ erro: rateCheck.reason });
   }
 
+  if (!security.verifyCSRFToken(req.body.csrfToken, req.session.csrfToken)) {
+    await security.logAudit('CSRF Token Inválido', userId, { endpoint: '/api/vip/compartilhar' });
+    return res.status(403).json({ erro: 'Token de segurança inválido.' });
+  }
+
   const { targetId } = req.body;
 
   if (!security.validateUserId(targetId || '')) {
@@ -583,6 +593,11 @@ app.post('/api/vip/revogar', async (req, res) => {
   if (!rateCheck.allowed) {
     await security.logAudit('Rate Limit Violado', userId, { endpoint: '/api/vip/revogar' });
     return res.status(429).json({ erro: rateCheck.reason });
+  }
+
+  if (!security.verifyCSRFToken(req.body.csrfToken, req.session.csrfToken)) {
+    await security.logAudit('CSRF Token Inválido', userId, { endpoint: '/api/vip/revogar' });
+    return res.status(403).json({ erro: 'Token de segurança inválido.' });
   }
 
   const { targetId } = req.body;
@@ -694,6 +709,110 @@ app.post('/api/vip/call', async (req, res) => {
         ? 'O bot não tem permissão "Manage Channels", ou a categoria de voz está fora do alcance dele na hierarquia.'
         : 'Falha ao criar/editar a call de voz.',
     });
+  }
+});
+
+// ---------- 9) Leaderboard — top 20 ----------
+app.get('/api/leaderboard', async (req, res) => {
+  if (!req.session.user) return res.status(401).json({ erro: 'Não logado.' });
+
+  try {
+    // Top 20 por XP
+    const top = await db.execute(
+      'SELECT user_id, xp, level FROM xp ORDER BY xp DESC LIMIT 20'
+    );
+
+    // Busca nomes e avatares dos membros do Discord em paralelo
+    const entries = await Promise.all(
+      top.rows.map(async (row, index) => {
+        const userId = row.user_id;
+        let displayName = userId;
+        let avatarUrl = `https://cdn.discordapp.com/embed/avatars/0.png`;
+
+        try {
+          const r = await fetch(
+            `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${userId}`,
+            { headers: headersBot }
+          );
+          if (r.ok) {
+            const m = await r.json();
+            displayName = m.nick || m.user.global_name || m.user.username;
+            avatarUrl = m.user.avatar
+              ? `https://cdn.discordapp.com/avatars/${userId}/${m.user.avatar}.png?size=64`
+              : `https://cdn.discordapp.com/embed/avatars/${Number(BigInt(userId) % 5n)}.png`;
+          }
+        } catch {
+          // mantém fallback
+        }
+
+        return {
+          posicao: index + 1,
+          userId,
+          displayName,
+          avatarUrl,
+          xp: Number(row.xp),
+          level: Number(row.level),
+        };
+      })
+    );
+
+    // Posição do usuário logado (pode estar fora do top 20)
+    const meuId = req.session.user.id;
+    let minha = entries.find((e) => e.userId === meuId) || null;
+
+    if (!minha) {
+      const res2 = await db.execute({
+        sql: 'SELECT xp, level FROM xp WHERE user_id = ?',
+        args: [meuId],
+      });
+      if (res2.rows.length) {
+        const countRes = await db.execute({
+          sql: 'SELECT COUNT(*) as pos FROM xp WHERE xp > ?',
+          args: [res2.rows[0].xp],
+        });
+        minha = {
+          posicao: Number(countRes.rows[0].pos) + 1,
+          userId: meuId,
+          xp: Number(res2.rows[0].xp),
+          level: Number(res2.rows[0].level),
+        };
+      } else {
+        minha = { posicao: null, userId: meuId, xp: 0, level: 0 };
+      }
+    }
+
+    res.json({ ranking: entries, eu: minha });
+  } catch (err) {
+    console.error('[Leaderboard]', err);
+    res.status(500).json({ erro: 'Falha ao buscar leaderboard.' });
+  }
+});
+
+// ---------- 10) XP do usuário logado ----------
+app.get('/api/xp/me', async (req, res) => {
+  if (!req.session.user) return res.status(401).json({ erro: 'Não logado.' });
+
+  try {
+    const r = await db.execute({
+      sql: 'SELECT xp, level FROM xp WHERE user_id = ?',
+      args: [req.session.user.id],
+    });
+
+    if (!r.rows.length) return res.json({ xp: 0, level: 0, posicao: null });
+
+    const xp = Number(r.rows[0].xp);
+    const level = Number(r.rows[0].level);
+
+    const countRes = await db.execute({
+      sql: 'SELECT COUNT(*) as pos FROM xp WHERE xp > ?',
+      args: [xp],
+    });
+    const posicao = Number(countRes.rows[0].pos) + 1;
+
+    res.json({ xp, level, posicao });
+  } catch (err) {
+    console.error('[XP/me]', err);
+    res.status(500).json({ erro: 'Falha ao buscar XP.' });
   }
 });
 
