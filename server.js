@@ -98,33 +98,45 @@ async function reposicionarCargoVIPAcimaDosAntigos(roleId) {
     const db = loadDB();
     const idsVip = Object.values(db)
       .map((registro) => registro?.roleId)
-      .filter(Boolean)
-      .filter((id) => id !== roleId);
+      .filter(Boolean);
 
+    // Todas as VIP roles (incluindo a nova)
     const vipRoles = roles.filter((role) => idsVip.includes(role.id));
     if (!vipRoles.length) return;
 
-    const maiorPosicaoVip = Math.max(...vipRoles.map((role) => Number(role.position) || 0));
-    const posAtual = Number(roles.find((role) => role.id === roleId)?.position || 0);
-    const novaPosicao = maiorPosicaoVip + 1;
+    // Ordena VIPs por position descendente (maior position = mais acima)
+    vipRoles.sort((a, b) => (Number(b.position) || 0) - (Number(a.position) || 0));
 
-    if (posAtual === novaPosicao) return;
+    // A nova role fica no topo (maior position)
+    const maxVipPosition = Math.max(...vipRoles.map((r) => Number(r.position) || 0));
+    const reorder = [];
+    
+    // Novo cargo fica com a maior posição + 1
+    reorder.push({ id: roleId, position: maxVipPosition + 1 });
+    
+    // Os outros VIPs descem uma posição cada
+    vipRoles.forEach((role, index) => {
+      if (role.id !== roleId) {
+        reorder.push({ id: role.id, position: maxVipPosition - index });
+      }
+    });
 
-    const moveRes = await fetch(
-      `https://discord.com/api/v10/guilds/${GUILD_ID}/roles/${roleId}`,
+    // Aplica reordenação em lote
+    const reorderRes = await fetch(
+      `https://discord.com/api/v10/guilds/${GUILD_ID}/roles`,
       {
         method: 'PATCH',
         headers: headersBot,
-        body: JSON.stringify({ position: novaPosicao }),
+        body: JSON.stringify(reorder),
       }
     );
 
-    if (!moveRes.ok) {
-      console.warn('[VIP Order] Falha ao reposicionar cargo VIP:', await moveRes.text());
+    if (!reorderRes.ok) {
+      console.warn('[VIP Order] Falha ao reordenar cargos VIP:', await reorderRes.text());
       return;
     }
 
-    console.log(`[VIP Order] Cargo ${roleId} movido para a posição ${novaPosicao} acima dos VIPs antigos.`);
+    console.log(`[VIP Order] Cargo ${roleId} movido para o topo dos cargos VIP.`);
   } catch (err) {
     console.warn('[VIP Order] Erro ao reposicionar cargo VIP:', err.message);
   }
