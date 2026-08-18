@@ -98,10 +98,10 @@ const client = new Client({
 
 const commands = [
   new SlashCommandBuilder()
-    .setName('vip')
+    .setName('order')
     .setDescription('Abre o painel pra criar ou editar seu cargo VIP pessoal.'),
   new SlashCommandBuilder()
-    .setName('xp')
+    .setName('orderxp')
     .setDescription('Mostra seu XP e nível atual.'),
 ].map((c) => c.toJSON());
 
@@ -120,11 +120,12 @@ client.once(Events.ClientReady, async () => {
   await registerCommands();
 });
 
-// ---------- Comando /vip ----------
+// ---------- Comandos /order e /orderxp ----------
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === 'vip') {
+  // /order — abre o painel VIP
+  if (interaction.commandName === 'order') {
     const embed = new EmbedBuilder()
       .setTitle('Seu Cargo VIP')
       .setDescription('Clique no botão abaixo pra escolher o nome e a cor do seu cargo pessoal.')
@@ -144,8 +145,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   }
 
-  // ---------- Comando /xp ----------
-  if (interaction.commandName === 'xp') {
+  // /orderxp — mostra XP e nível
+  if (interaction.commandName === 'orderxp') {
     try {
       const { xp, level } = await getXP(interaction.user.id);
       const faltam = Math.max(0, XP_PARA_VIP - xp);
@@ -166,7 +167,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.reply({ embeds: [embed], flags: 64 });
     } catch (err) {
-      if (err.code !== 10062) console.error('[XP Command] Erro:', err);
+      if (err.code !== 10062) console.error('[OrderXP Command] Erro:', err);
     }
   }
 });
@@ -228,7 +229,7 @@ async function darCargoVIP(userId, message) {
       .setColor(0x8b5cf6)
       .setTitle('🎉 Novo VIP!')
       .setDescription(
-        `<@${userId}> chegou a **3000 XP** e desbloqueou o cargo VIP!\n\nUse \`/vip\` para criar seu cargo personalizado.`
+        `<@${userId}> chegou a **3000 XP** e desbloqueou o cargo VIP!\n\nUse \`/order\` para criar seu cargo personalizado.`
       );
 
     await message.channel.send({ embeds: [embed] });
