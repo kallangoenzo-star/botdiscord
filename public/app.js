@@ -18,9 +18,11 @@ let nomeDiscordReal = 'você';
 
 function inicializarRoda() {
   if (rodaInicializada) return;
-  rodaInicializada = true;
-
+  
   const canvas = document.getElementById('colorWheel');
+  if (!canvas) return; // Se o elemento não existir, não inicializa
+  
+  rodaInicializada = true;
   const ctx = canvas.getContext('2d');
   const radius = canvas.width / 2;
 
@@ -198,7 +200,6 @@ function configurarAbas(cargoAtual) {
       btnVip.classList.add('ativa');
       btnLeaderboard.setAttribute('aria-selected', 'false');
       btnVip.setAttribute('aria-selected', 'true');
-      inicializarRoda();
     }
   }
 
@@ -326,6 +327,9 @@ async function iniciar() {
 
   // Configura abas com base em se tem cargo VIP de acesso
   configurarAbas(data.temCargoVip);
+
+  // Inicializa a roda de cores antecipadamente para evitar layout shift ao trocar de aba
+  inicializarRoda();
 
   // Preenche lista de membros compartilhados (painel VIP)
   (data.membros || []).forEach((m) => adicionarNaLista(m));
@@ -500,7 +504,7 @@ callBtn.addEventListener('click', async () => {
     const res = await fetch('/api/vip/call', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nome: callNomeInput.value.trim() || 'Call Privada' }),
+      body: JSON.stringify({ nome: callNomeInput.value.trim() || 'Call Privada', csrfToken }),
     });
     const data = await res.json();
     if (!res.ok) {
