@@ -67,6 +67,31 @@ async function addXP(userId, quantidade) {
   return { xp, level: novoLevel };
 }
 
+async function removeXP(userId, quantidade) {
+  // Verifica se o usuário existe e tem XP suficiente
+  const atual = await getXP(userId);
+  if (atual.xp < quantidade) {
+    return { xp: atual.xp, level: atual.level, erro: 'XP insuficiente' };
+  }
+
+  // Remove o XP
+  await db.execute({
+    sql: 'UPDATE xp SET xp = xp - ? WHERE user_id = ?',
+    args: [quantidade, userId],
+  });
+
+  // Recalcula nível: 1 nível a cada 100 XP
+  const { xp } = await getXP(userId);
+  const novoLevel = Math.floor(xp / 100);
+
+  await db.execute({
+    sql: 'UPDATE xp SET level = ? WHERE user_id = ?',
+    args: [novoLevel, userId],
+  });
+
+  return { xp, level: novoLevel };
+}
+
 // ---------- Cooldown de XP (em memória) ----------
 // Guarda o timestamp da última mensagem que deu XP por usuário
 const cooldowns = new Map();
@@ -109,6 +134,15 @@ const commands = [
     .setDescription('[ADMIN] Adiciona XP a um usuário.')
     .addUserOption((opt) =>
       opt.setName('usuario').setDescription('Usuário que vai receber o XP').setRequired(true)
+    )
+    .addIntegerOption((opt) =>
+      opt.setName('quantidade').setDescription('Quantidade de XP (1-9999)').setRequired(true).setMinValue(1).setMaxValue(9999)
+    ),
+  new SlashCommandBuilder()
+    .setName('orderxpremove')
+    .setDescription('[ADMIN] Remove XP de um usuário.')
+    .addUserOption((opt) =>
+      opt.setName('usuario').setDescription('Usuário que vai perder o XP').setRequired(true)
     )
     .addIntegerOption((opt) =>
       opt.setName('quantidade').setDescription('Quantidade de XP (1-9999)').setRequired(true).setMinValue(1).setMaxValue(9999)
@@ -270,6 +304,63 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content: '❌ Erro ao adicionar XP.', flags: 64 });
     }
   }
+
+  // /orderxpremove — remove XP (só admin)
+  if (interaction.commandName === 'orderxpremove') {
+    const ADMIN_ID = process.env.ADMIN_ID;
+
+    if (interaction.user.id !== ADMIN_ID) {
+      return interaction.reply({ content: '❌ Você não tem permissão para usar esse comando.', flags: 64 });
+    }
+
+    const alvo = interaction.options.getUser('usuario');
+    const quantidade = interaction.options.getInteger('quantidade');
+
+    try {
+      const resultado = await removeXP(alvo.id, quantidade);
+
+      if (resultado.erro) {
+        const embed = new EmbedBuilder()
+          .setColor(0xf97066)
+          .setTitle('❌ Erro ao Remover XP')
+          .addFields(
+            { name: 'Usuário', value: `<@${alvo.id}>`, inline: true },
+            { name: 'XP Atual', value: `${resultado.xp}`, inline: true },
+            { name: 'Motivo', value: resultado.erro, inline: true },
+          );
+        return interaction.reply({ embeds: [embed], flags: 64 });
+      }
+
+      const { xp, level } = resultado;
+      const xpAntes = xp + quantidade;
+
+      // Verifica se perdeu o cargo VIP com essa remoção
+      if (xpAntes >= XP_PARA_VIP && xp < XP_PARA_VIP) {
+        const member = await interaction.guild.members.fetch(alvo.id).catch(() => null);
+        if (member && VIP_ROLE_ID) {
+          await member.roles.remove(VIP_ROLE_ID).catch(() => {
+            console.warn('[VIP] Falha ao remover cargo VIP de usuário que perdeu XP');
+          });
+        }
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0xf97066)
+        .setTitle('✅ XP Removido')
+        .addFields(
+          { name: 'Usuário', value: `<@${alvo.id}>`, inline: true },
+          { name: 'XP Removido', value: `-${quantidade}`, inline: true },
+          { name: 'XP Total', value: `${xp}`, inline: true },
+          { name: 'Nível Atual', value: `${level}`, inline: true },
+        );
+
+      await interaction.reply({ embeds: [embed], flags: 64 });
+    } catch (err) {
+      console.error('[OrderXPRemove] Erro:', err);
+      await interaction.reply({ content: '❌ Erro ao remover XP.', flags: 64 });
+    }
+  }
+
   if (interaction.commandName === 'orderxp') {
     try {
       const { xp, level } = await getXP(interaction.user.id);
