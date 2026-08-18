@@ -11,6 +11,7 @@ const {
   ButtonStyle,
   EmbedBuilder,
 } = require('discord.js');
+const security = require('./security');
 const { createClient } = require('@libsql/client');
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -131,7 +132,44 @@ client.once(Events.ClientReady, async () => {
 
 // ---------- Comandos /order e /orderxp ----------
 client.on(Events.InteractionCreate, async (interaction) => {
-  // Botão "Ver meu XP" do /order
+  // Botão "Ver detalhes (admin)" dos logs de painel
+  if (interaction.isButton() && interaction.customId.startsWith('painel_log:')) {
+    const ADMIN_ID = process.env.ADMIN_ID;
+
+    if (interaction.user.id !== ADMIN_ID) {
+      return interaction.reply({ content: '❌ Apenas o admin pode ver esses detalhes.', flags: 64 });
+    }
+
+    const logId = interaction.customId.replace('painel_log:', '');
+    const dados = security.getPainelLogData(logId);
+
+    if (!dados) {
+      return interaction.reply({ content: '⚠️ Dados expirados ou não encontrados (máx. 1 hora).', flags: 64 });
+    }
+
+    try {
+      const adminUser = await client.users.fetch(ADMIN_ID);
+      const dm = await adminUser.createDM();
+      await dm.send({
+        embeds: [{
+          title: '🔍 Detalhes do Acesso ao Painel',
+          description: `**Usuário:** <@${dados.userId}> (${dados.username})\n**Quando:** ${dados.timestamp}`,
+          fields: [
+            { name: 'IP', value: dados.ip, inline: true },
+            { name: 'País', value: dados.pais, inline: true },
+            { name: 'Cidade', value: dados.cidade, inline: true },
+            { name: 'Navegador / SO', value: dados.userAgent, inline: false },
+          ],
+          color: 0x8b5cf6,
+        }],
+      });
+      await interaction.reply({ content: '✅ Detalhes enviados no seu privado.', flags: 64 });
+    } catch (err) {
+      console.error('[PainelLog] Erro ao enviar DM:', err);
+      await interaction.reply({ content: '❌ Não consegui te mandar DM. Verifica se suas DMs estão abertas.', flags: 64 });
+    }
+    return;
+  }
   if (interaction.isButton() && interaction.customId === 'btn_xp') {
     try {
       const { xp, level } = await getXP(interaction.user.id);

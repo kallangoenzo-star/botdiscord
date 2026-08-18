@@ -105,7 +105,7 @@ async function logAudit(action, userId, details) {
         value: String(value).slice(0, 1024),
         inline: false,
       })),
-      color: action.includes('Erro') ? 16711680 : 3066993, // Vermelho ou Azul
+      color: action.includes('Erro') ? 16711680 : 3066993,
       timestamp: new Date().toISOString(),
     }],
   };
@@ -125,6 +125,82 @@ async function logAudit(action, userId, details) {
   } catch (err) {
     console.error('Erro ao enviar log:', err);
   }
+}
+
+// ========== 5b. LOG DE ABERTURA DE PAINEL (dados sensíveis protegidos) ==========
+// Guarda detalhes sensíveis em memória por 1 hora — liberados só via DM pro admin
+const painelLogStore = new Map();
+
+// Limpa entradas antigas a cada hora
+setInterval(() => {
+  const agora = Date.now();
+  for (const [key, entry] of painelLogStore.entries()) {
+    if (agora - entry.ts > 3600000) painelLogStore.delete(key);
+  }
+}, 3600000);
+
+async function logAuditPainel(userId, username, ip, pais, cidade, userAgent) {
+  const LOGS_CHANNEL_ID = '1539053493979971646';
+  const timestamp = new Date().toISOString();
+
+  // Gera um ID único pra esse acesso
+  const logId = `painel_${userId}_${Date.now()}`;
+
+  // Guarda dados sensíveis em memória
+  painelLogStore.set(logId, {
+    ts: Date.now(),
+    userId,
+    username,
+    ip,
+    pais,
+    cidade,
+    userAgent,
+    timestamp,
+  });
+
+  // Log público — sem IP, sem dados sensíveis
+  const message = {
+    embeds: [{
+      title: '🖥️ Abertura de Painel VIP',
+      description: `**Usuário:** <@${userId}> (${username})\n**Quando:** ${timestamp}`,
+      fields: [
+        { name: 'País', value: pais, inline: true },
+        { name: 'Cidade', value: cidade, inline: true },
+      ],
+      color: 3066993,
+      timestamp,
+      footer: { text: 'IP e detalhes disponíveis apenas para o admin' },
+    }],
+    components: [{
+      type: 1,
+      components: [{
+        type: 2,
+        style: 2,
+        label: '🔍 Ver detalhes (admin)',
+        custom_id: `painel_log:${logId}`,
+      }],
+    }],
+  };
+
+  try {
+    await fetch(
+      `https://discord.com/api/v10/channels/${LOGS_CHANNEL_ID}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bot ${process.env.DISCORD_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(message),
+      }
+    );
+  } catch (err) {
+    console.error('Erro ao enviar log de painel:', err);
+  }
+}
+
+function getPainelLogData(logId) {
+  return painelLogStore.get(logId) || null;
 }
 
 // ========== 6. HTTPS CHECK ==========
@@ -218,6 +294,8 @@ module.exports = {
   validateUserId,
   verifyUserHasRole,
   logAudit,
+  logAuditPainel,
+  getPainelLogData,
   requireHTTPS,
   sessionTimeout,
   generateOAuth2State,

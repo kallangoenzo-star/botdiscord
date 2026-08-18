@@ -333,7 +333,30 @@ app.get('/auth/callback', async (req, res) => {
     };
 
     console.log('[OAuth2] Login bem-sucedido:', user.username);
-    await security.logAudit('Login Bem-Sucedido', user.id, { username: user.username });
+
+    // Coleta IP e geolocalização para audit log
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'desconhecido';
+    let pais = 'desconhecido';
+    let cidade = 'desconhecido';
+    try {
+      const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country,city,status&lang=pt-BR`);
+      const geo = await geoRes.json();
+      if (geo.status === 'success') {
+        pais = geo.country || 'desconhecido';
+        cidade = geo.city || 'desconhecido';
+      }
+    } catch {
+      // falha silenciosa, não impede o login
+    }
+
+    await security.logAuditPainel(
+      user.id,
+      user.username,
+      ip,
+      pais,
+      cidade,
+      req.headers['user-agent']?.slice(0, 200) || 'desconhecido'
+    );
     res.redirect('/');
   } catch (err) {
     console.error('[OAuth2] Erro no callback:', err);
