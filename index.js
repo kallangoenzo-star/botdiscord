@@ -54,7 +54,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       .setURL(SITE_URL)
   );
 
-  await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+  try {
+    await interaction.reply({ embeds: [embed], components: [row], flags: 64 });
+  } catch (err) {
+    // Interação expirada ou já respondida — não derruba o processo
+    if (err.code !== 10062) console.error('[Interaction] Erro inesperado:', err);
+  }
 });
+
+// Evita que erros não tratados derrubem o processo
+client.on('error', (err) => console.error('[Discord Client Error]', err));
 
 client.login(TOKEN);
