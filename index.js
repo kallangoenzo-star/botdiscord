@@ -103,6 +103,15 @@ const commands = [
   new SlashCommandBuilder()
     .setName('orderxp')
     .setDescription('Mostra seu XP e nível atual.'),
+  new SlashCommandBuilder()
+    .setName('orderxpadd')
+    .setDescription('[ADMIN] Adiciona XP a um usuário.')
+    .addUserOption((opt) =>
+      opt.setName('usuario').setDescription('Usuário que vai receber o XP').setRequired(true)
+    )
+    .addIntegerOption((opt) =>
+      opt.setName('quantidade').setDescription('Quantidade de XP (1-9999)').setRequired(true).setMinValue(1).setMaxValue(9999)
+    ),
 ].map((c) => c.toJSON());
 
 async function registerCommands() {
@@ -145,7 +154,46 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   }
 
-  // /orderxp — mostra XP e nível
+  // /orderxpadd — adiciona XP (só admin)
+  if (interaction.commandName === 'orderxpadd') {
+    const ADMIN_ID = process.env.ADMIN_ID;
+
+    if (interaction.user.id !== ADMIN_ID) {
+      return interaction.reply({ content: '❌ Você não tem permissão para usar esse comando.', flags: 64 });
+    }
+
+    const alvo = interaction.options.getUser('usuario');
+    const quantidade = interaction.options.getInteger('quantidade');
+
+    try {
+      const { xp, level } = await addXP(alvo.id, quantidade);
+      const xpAntes = xp - quantidade;
+
+      // Verifica se cruzou o limite do VIP com essa adição
+      if (xpAntes < XP_PARA_VIP && xp >= XP_PARA_VIP) {
+        const member = await interaction.guild.members.fetch(alvo.id).catch(() => null);
+        if (member) {
+          const fakeMessage = { channel: interaction.channel };
+          await darCargoVIP(alvo.id, fakeMessage);
+        }
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x4fd1c5)
+        .setTitle('✅ XP Adicionado')
+        .addFields(
+          { name: 'Usuário', value: `<@${alvo.id}>`, inline: true },
+          { name: 'XP Adicionado', value: `+${quantidade}`, inline: true },
+          { name: 'XP Total', value: `${xp}`, inline: true },
+          { name: 'Nível Atual', value: `${level}`, inline: true },
+        );
+
+      await interaction.reply({ embeds: [embed], flags: 64 });
+    } catch (err) {
+      console.error('[OrderXPAdd] Erro:', err);
+      await interaction.reply({ content: '❌ Erro ao adicionar XP.', flags: 64 });
+    }
+  }
   if (interaction.commandName === 'orderxp') {
     try {
       const { xp, level } = await getXP(interaction.user.id);
