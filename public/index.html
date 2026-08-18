@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Painel VIP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+  <div class="scene">
+    <div class="card" id="card">
+
+      <div class="eyebrow">PAINEL · ACESSO EXCLUSIVO</div>
+      <h1 class="wordmark">VIP</h1>
+
+      <!-- Estado: deslogado -->
+      <div id="estado-login" class="estado">
+        <p class="descricao">Entre com sua conta do Discord pra criar ou editar seu cargo pessoal.</p>
+        <a href="/auth/login" class="botao botao-discord">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.056 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.3 12.3 0 0 1-1.873.892.076.076 0 0 0-.04.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.83 19.83 0 0 0 6.002-3.03.077.077 0 0 0 .032-.055c.5-5.177-.838-9.674-3.549-13.66a.06.06 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.955 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+          Entrar com Discord
+        </a>
+      </div>
+
+      <!-- Estado: logado -->
+      <div id="estado-painel" class="estado oculto">
+
+        <div class="preview-wrap">
+          <div class="preview-label">PRÉ-VISUALIZAÇÃO</div>
+          <div class="preview-header" id="previewHeader">CARGO VIP</div>
+          <div class="preview-pill" id="previewPill">
+            <img id="previewAvatar" class="preview-avatar" src="" alt="" />
+            <span class="preview-nome" id="previewNome">carregando...</span>
+          </div>
+        </div>
+
+        <label class="campo-label" for="nomeInput">Nome do cargo</label>
+        <input type="text" id="nomeInput" class="campo-texto" maxlength="32" placeholder="Ex: Membro Fundador" />
+
+        <div class="gradiente-toggle-row">
+          <label class="campo-label" for="gradienteToggle" style="margin:0;">Cargo com gradiente (2 cores)</label>
+          <input type="checkbox" id="gradienteToggle" class="switch" />
+        </div>
+
+        <div class="cor-tabs" id="corTabs">
+          <button type="button" class="cor-tab ativa" id="tabCor1" data-slot="c1">
+            <span class="cor-tab-dot" id="dotCor1"></span> Cor 1
+          </button>
+          <button type="button" class="cor-tab oculta" id="tabCor2" data-slot="c2">
+            <span class="cor-tab-dot" id="dotCor2"></span> Cor 2
+          </button>
+        </div>
+
+        <div class="wheel-section">
+          <canvas id="colorWheel" width="220" height="220"></canvas>
+          <div class="wheel-controls">
+            <label class="campo-label" for="lightSlider">Brilho</label>
+            <input type="range" id="lightSlider" min="10" max="90" value="50" class="slider" />
+            <label class="campo-label" for="hexInput">HEX</label>
+            <input type="text" id="hexInput" class="campo-hex" maxlength="7" value="#8B5CF6" />
+          </div>
+        </div>
+
+        <button id="salvarBtn" class="botao botao-salvar">Salvar cargo VIP</button>
+        <p class="mensagem" id="mensagem"></p>
+
+        <div class="divisor"></div>
+
+        <div class="compartilhar-secao">
+          <label class="campo-label" for="buscaInput">Compartilhar cargo com alguém</label>
+          <p class="descricao-pequena">A pessoa ganha a mesma cor, sem poder editá-la.</p>
+          <input type="text" id="buscaInput" class="campo-texto" placeholder="Digite o nome de alguém do servidor..." autocomplete="off" />
+          <div id="resultadosBusca" class="resultados-busca oculto"></div>
+
+          <div id="listaMembros" class="lista-membros"></div>
+        </div>
+
+        <div class="divisor"></div>
+
+        <div class="call-secao">
+          <label class="campo-label" for="callNomeInput">Sua call de voz privada</label>
+          <p class="descricao-pequena">Só você e quem tem seu cargo conseguem entrar. Você tem controle total dela (mutar, expulsar, mover).</p>
+          <input type="text" id="callNomeInput" class="campo-texto" maxlength="32" placeholder="Ex: Sala VIP" />
+          <button id="callBtn" class="botao botao-call">Criar minha Call Privada</button>
+          <p class="mensagem" id="mensagemCall"></p>
+        </div>
+      </div>
+
+    </div>
+    <p class="rodape">as cores refletem exatamente como vão aparecer no seu servidor</p>
+  </div>
+
+<script src="/app.js"></script>
+</body>
+</html>

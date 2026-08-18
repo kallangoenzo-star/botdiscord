@@ -1,0 +1,113 @@
+# Proteções Rígidas para Bot de Discord com Autenticação OAuth2
+
+Este documento estabelece a arquitetura de segurança e as funções críticas necessárias para mitigar riscos de roubo de tokens, Session Hijacking, Phishing e engenharia social em bots do Discord integrados a sites de autenticação.
+
+---
+
+## 1. Fluxo Base Segura (OAuth2 + PKCE)
+
+Para aplicações web que autenticam usuários do Discord, o fluxo tradicional `Authorization Code Grant` deve ser blindado.
+
+### Parâmetro `state` Anti-CSRF
+O parâmetro `state` deve ser um token criptograficamente seguro gerado por usuário antes de redirecioná-lo. Ele previne ataques de Cross-Site Request Forgery.
+
+```python
+import secrets
+import hashlib
+
+def generate_secure_state(session) -> str:
+    """Gera um token state único e armazena o hash na sessão do servidor."""
+    state_token = secrets.token_urlsafe(32)
+    # Salva o hash na sessão para evitar session fixation ou leitura direta
+    session['oauth_state_hash'] = hashlib.sha256(state_token.encode()).hexdigest()
+    return state_token
+
+def verify_state(session, request_state: str) -> bool:
+    """Valida se o state retornado corresponde ao gerado."""
+    saved_hash = session.get('oauth_state_hash')
+    if not saved_hash or not request_state:
+        return False
+    current_hash = hashlib.sha256(request_state.encode()).hexdigest()
+    return secrets.compare_digest(saved_hash, current_hash)
+```
+
+---
+
+## 2. Validação Antifraude de Conta (Anti-Alt/Bot Spoofing)
+
+Para evitar que usuários criem contas fakes ou usem bots para inflar o servidor ou burlar regras de acesso, o servidor backend deve inspecionar os metadados do usuário retornados pela API do Discord após a troca do código pelo token.
+
+### Função de Verificação de Maturidade da Conta
+```python
+from datetime import datetime, timezone
+
+def is_account_trustworthy(user_data: dict, min_age_days: int = 7) -> tuple[bool, str]:
+    """
+    Analisa se a conta do Discord atende aos critérios mínimos de segurança.
+    Exige e-mail verificado e idade mínima da conta.
+    """
+    # 1. Verificação de E-mail
+    if not user_data.get('verified', False):
+        return False, "E-mail não verificado no Discord."
+        
+    # 2. Idade da Conta (Criação via Snowflake ID)
+    user_id = int(user_data['id'])
+    # ID do Discord contém o timestamp de criação (bitshift 22 + Discord Epoch)
+    timestamp_ms = (user_id >> 22) + 1420070400000
+    creation_date = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    
+    age_days = (now - creation_date).days
+    if age_days < min_age_days:
+        return False, f"Conta muito recente ({age_days} dias). Mínimo exigido: {min_age_days} dias."
+        
+    # 3. Verificação de Flag de 2FA (Opcional, mas recomendado para cargos administrativos)
+    # se o escopo incluir identificação de MFA
+    
+    return True, "Conta confiável."
+```
+
+---
+
+## 3. Segurança no Envio do Link (Interface do Bot)
+
+O bot nunca deve enviar links puros no chat global. Use componentes interativos como botões acoplados a mensagens efêmeras.
+
+### Exemplo Conceitual em Discord.py (Mensagem Efêmera + Validação)
+```python
+import discord
+from discord.ext import commands
+
+class AuthButton(discord.ui.View):
+    def __init__(self, auth_url: str):
+        super().__init__(timeout=None)
+        # Adiciona o botão direcionando diretamente para a URL segura do seu site
+        self.add_item(discord.ui.Button(label="Autorizar Conta", url=auth_url, style=discord.ButtonStyle.link))
+
+@commands.slash_command(name="verificar", description="Receba seu cargo autenticando sua conta.")
+async def verificar(ctx: discord.ApplicationContext):
+    # Gera a URL baseada no state seguro gerado no backend para este usuário específico
+    # Exemplo: https://seu-site.com/auth/discord?user_id=...
+    user_id = ctx.author.id
+    secure_auth_url = f"https://seu-site.com/api/login?uid={user_id}" 
+    
+    # A resposta DEVE ser ephemeral=True para que ninguém intercepte ou use engenharia social
+    await ctx.respond(
+        content="Clique no botão abaixo para autenticar com segurança. Esse link é exclusivo seu.",
+        view=AuthButton(secure_auth_url),
+        ephemeral=True
+    )
+```
+
+---
+
+## 4. Gerenciamento de Sessão e Tokens no Backend
+
+* **HttpOnly & Secure Cookies:** Ao autenticar o usuário no site, guarde a sessão dele em um cookie com as diretivas `HttpOnly` (impede leitura via JavaScript/XSS), `Secure` (apenas HTTPS) e `SameSite=Strict` ou `Lax` (impede envio do cookie em redirecionamentos externos maliciosos).
+* **Armazenamento de Tokens:** Nunca guarde o `access_token` ou `refresh_token` do usuário no localStorage do navegador. Guarde-os criptografados no banco de dados do seu backend, indexados pelo ID do usuário ou pela sessão segura.
+
+## 5. Checklist de Infraestrutura Rígida
+
+1. **Strict Redirect URIs:** No painel do Discord Developers, cadastre a URL exata (ex: `https://meusite.com/callback`). Nunca use padrões amplos ou HTTP puro.
+2. **Rate Limit no Callback:** Coloque um limitador de requisições (ex: Nginx Rate Limit ou Cloudflare) na rota que recebe o código do Discord (`/callback`) para evitar ataques de força bruta ou estouro de conexões.
+3. **Mínimo de Escopo Necessário:** Solicite apenas `identify` (e `guilds.join` se for o caso de colocar o usuário no servidor automaticamente). Nunca peça escopos invasivos como `rpc` ou `connections` a menos que seja estritamente necessário.
