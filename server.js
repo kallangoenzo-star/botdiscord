@@ -2,8 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
-const fs = require('fs');
 const security = require('./security');
+const { createClient } = require('@libsql/client');
 
 const {
   CLIENT_ID,
@@ -13,13 +13,14 @@ const {
   SITE_URL,
   SESSION_SECRET,
   PORT,
+  TURSO_URL,
+  TURSO_AUTH_TOKEN,
 } = process.env;
 
 const REDIRECT_URI = `${SITE_URL}/auth/callback`;
-const DB_PATH = path.join(__dirname, 'vip-roles.json');
 
 // Categoria "Voice Channels" onde as calls privadas vão ser criadas
-const CATEGORIA_VOZ_ID = '1538714895988695051';
+const CATEGORIA_VOZ_ID = process.env.CATEGORIA_VOZ_ID || '1538714895988695051';
 
 // Bits de permissão do Discord que a gente usa pra montar a call privada
 const PERM = {
@@ -47,27 +48,67 @@ const PERM_PERMITIR_DONO = String(
     PERM.MANAGE_CHANNELS
 );
 
-function loadDB() {
-  if (!fs.existsSync(DB_PATH)) fs.writeFileSync(DB_PATH, '{}');
-  const raw = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-  // Normaliza registros antigos (que eram só uma string com o roleId)
-  // pro formato novo { roleId, membros: [] }.
-  for (const key of Object.keys(raw)) {
-    if (typeof raw[key] === 'string') {
-      raw[key] = { roleId: raw[key], membros: [] };
-    } else if (!raw[key].membros) {
-      raw[key].membros = [];
-    }
-  }
-  return raw;
-}
-function saveDB(data) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+// ---------- Turso (libsql) ----------
+const db = createClient({
+  url: TURSO_URL,
+  authToken: TURSO_AUTH_TOKEN,
+});
+
+// Garante que a tabela existe ao iniciar
+async function initDB() {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS vip_roles (
+      user_id   TEXT PRIMARY KEY,
+      role_id   TEXT,
+      channel_id TEXT,
+      membros   TEXT DEFAULT '[]'
+    )
+  `);
+  console.log('[DB] Tabela vip_roles pronta.');
 }
 
-async function aplicarCargoCompartilhado(userId, roleId, membros) {
+// Busca registro de um usuário
+async function getRegistro(userId) {
+  const res = await db.execute({
+    sql: 'SELECT * FROM vip_roles WHERE user_id = ?',
+    args: [userId],
+  });
+  if (!res.rows.length) return null;
+  const row = res.rows[0];
+  return {
+    roleId: row.role_id || null,
+    channelId: row.channel_id || null,
+    membros: JSON.parse(row.membros || '[]'),
+  };
+}
+
+// Salva/atualiza registro de um usuário
+async function saveRegistro(userId, { roleId, channelId, membros }) {
+  await db.execute({
+    sql: `INSERT INTO vip_roles (user_id, role_id, channel_id, membros)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET
+            role_id    = excluded.role_id,
+            channel_id = excluded.channel_id,
+            membros    = excluded.membros`,
+    args: [userId, roleId || null, channelId || null, JSON.stringify(membros || [])],
+  });
+}
+
+// Retorna todos os roleIds cadastrados (pra reordenação VIP)
+async function getAllRoleIds() {
+  const res = await db.execute('SELECT role_id FROM vip_roles WHERE role_id IS NOT NULL');
+  return res.rows.map((r) => r.role_id).filter(Boolean);
+}
+
+// ---------- Helpers Discord ----------
+const headersBot = {
+  Authorization: `Bot ${DISCORD_TOKEN}`,
+  'Content-Type': 'application/json',
+};
+
+async function aplicarCargoCompartilhado(roleId, membros) {
   if (!roleId || !Array.isArray(membros) || !membros.length) return;
-
   const ids = [...new Set(membros.filter(Boolean))];
   for (const targetId of ids) {
     try {
@@ -86,7 +127,6 @@ async function aplicarCargoCompartilhado(userId, roleId, membros) {
 
 async function reposicionarCargoVIPAcimaDosAntigos(roleId) {
   if (!roleId) return;
-
   try {
     const rolesRes = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/roles`, { headers: headersBot });
     if (!rolesRes.ok) {
@@ -95,59 +135,38 @@ async function reposicionarCargoVIPAcimaDosAntigos(roleId) {
     }
 
     const roles = await rolesRes.json();
-    const db = loadDB();
-    const idsVip = Object.values(db)
-      .map((registro) => registro?.roleId)
-      .filter(Boolean);
+    const idsVip = await getAllRoleIds();
 
-    // Todas as VIP roles (incluindo a nova)
     const vipRoles = roles.filter((role) => idsVip.includes(role.id));
     if (!vipRoles.length) return;
 
-    // Ordena VIPs por position descendente (maior position = mais acima)
     vipRoles.sort((a, b) => (Number(b.position) || 0) - (Number(a.position) || 0));
 
-    // A nova role fica no topo (maior position)
     const maxVipPosition = Math.max(...vipRoles.map((r) => Number(r.position) || 0));
-    const reorder = [];
-    
-    // Novo cargo fica com a maior posição + 1
-    reorder.push({ id: roleId, position: maxVipPosition + 1 });
-    
-    // Os outros VIPs descem uma posição cada
+    const reorder = [{ id: roleId, position: maxVipPosition + 1 }];
     vipRoles.forEach((role, index) => {
       if (role.id !== roleId) {
         reorder.push({ id: role.id, position: maxVipPosition - index });
       }
     });
 
-    // Aplica reordenação em lote
-    const reorderRes = await fetch(
-      `https://discord.com/api/v10/guilds/${GUILD_ID}/roles`,
-      {
-        method: 'PATCH',
-        headers: headersBot,
-        body: JSON.stringify(reorder),
-      }
-    );
+    const reorderRes = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/roles`, {
+      method: 'PATCH',
+      headers: headersBot,
+      body: JSON.stringify(reorder),
+    });
 
     if (!reorderRes.ok) {
       console.warn('[VIP Order] Falha ao reordenar cargos VIP:', await reorderRes.text());
       return;
     }
-
     console.log(`[VIP Order] Cargo ${roleId} movido para o topo dos cargos VIP.`);
   } catch (err) {
     console.warn('[VIP Order] Erro ao reposicionar cargo VIP:', err.message);
   }
 }
 
-const headersBot = {
-  Authorization: `Bot ${DISCORD_TOKEN}`,
-  'Content-Type': 'application/json',
-};
-
-// Busca dados básicos (nome + avatar) de um membro pelo ID, direto na API do Discord
+// Busca dados básicos de um membro pelo ID
 async function buscarMembro(userId) {
   const r = await fetch(
     `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${userId}`,
@@ -165,8 +184,9 @@ async function buscarMembro(userId) {
   };
 }
 
+// ---------- Express ----------
 const app = express();
-app.set('trust proxy', 1); // Necessário em Railway/HTTPS para cookies e OAuth funcionar corretamente
+app.set('trust proxy', 1);
 app.use(security.requireHTTPS);
 app.use(security.securityHeaders);
 app.use(express.json({ limit: '1mb' }));
@@ -187,7 +207,7 @@ app.use(
 );
 app.use(security.sessionTimeout);
 
-// ---------- 1) Login: manda pro Discord autorizar ----------
+// ---------- 1) Login ----------
 app.get('/auth/login', (req, res) => {
   req.session.regenerate((err) => {
     if (err) {
@@ -222,7 +242,7 @@ app.get('/auth/login', (req, res) => {
   });
 });
 
-// ---------- 2) Callback: troca o code por token e pega o usuário ----------
+// ---------- 2) Callback ----------
 app.get('/auth/callback', async (req, res) => {
   const { code, state } = req.query;
   const sessionState = req.session.oauthState;
@@ -236,46 +256,33 @@ app.get('/auth/callback', async (req, res) => {
   });
 
   if (!state) {
-    console.error('[OAuth2] State parameter não recebido do Discord');
     await security.logAudit('OAuth2 Erro', 'unknown', { motivo: 'State parameter não recebido' });
     return res.redirect('/?erro=state_invalido');
   }
 
   if (!sessionState) {
-    console.error('[OAuth2] State não armazenado na sessão');
     await security.logAudit('OAuth2 Erro', 'unknown', { motivo: 'State não na sessão' });
     return res.redirect('/?erro=state_invalido');
   }
 
   if (!security.verifyOAuth2State(String(state), String(sessionState))) {
-    console.error('[OAuth2] State mismatch', {
-      esperado: String(sessionState).slice(0, 10),
-      recebido: String(state).slice(0, 10),
-      tamEsperado: String(sessionState).length,
-      tamRecebido: String(state).length,
-    });
     await security.logAudit('OAuth2 State Mismatch', 'unknown', { motivo: 'State não corresponde' });
     return res.redirect('/?erro=state_invalido');
   }
-  
-  // Limpa state após validação bem-sucedida
+
   req.session.oauthState = null;
 
   if (!code) {
-    console.error('[OAuth2] Code não recebido do Discord');
     await security.logAudit('OAuth2 Erro', 'unknown', { motivo: 'Code não recebido' });
     return res.redirect('/?erro=sem_code');
   }
 
   try {
-    // 2. Valida Redirect URI (deve ser exatamente igual ao registrado)
     if (!security.validateRedirectURI(REDIRECT_URI, REDIRECT_URI)) {
-      console.error('[OAuth2] Redirect URI inválido');
       await security.logAudit('Redirect URI Inválido', 'unknown', { redirect_uri: REDIRECT_URI });
       return res.redirect('/?erro=redirect_invalido');
     }
 
-    // 3. Troca code por token no server-side (Client Secret nunca sai do servidor)
     const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -292,8 +299,6 @@ app.get('/auth/callback', async (req, res) => {
       console.error('--- Discord recusou a troca de token ---');
       console.error('Status HTTP:', tokenRes.status);
       console.error('Resposta do Discord:', tokenData);
-      console.error('Redirect URI usado:', REDIRECT_URI);
-      console.error('-----------------------------------------');
       await security.logAudit('Token Exchange Falhou', 'unknown', { status: tokenRes.status, erro: tokenData.error });
       return res.redirect('/?erro=token_falhou');
     }
@@ -303,15 +308,13 @@ app.get('/auth/callback', async (req, res) => {
     });
     const user = await userRes.json();
 
-    // Verifica se o usuário é membro do servidor
     const memberRes = await fetch(
       `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${user.id}`,
       { headers: headersBot }
     );
-    
+
     if (!memberRes.ok) {
-      console.warn('[OAuth2] Usuário não é membro do servidor:', user.username, user.id);
-      await security.logAudit('Login Recusado - Não é Membro', user.id, { username: user.username, motivo: 'Não é membro do servidor' });
+      await security.logAudit('Login Recusado - Não é Membro', user.id, { username: user.username });
       return res.redirect('/?erro=nao_eh_membro');
     }
 
@@ -336,12 +339,13 @@ app.get('/auth/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/'));
 });
 
-// ---------- 3) Quem sou eu (front consulta isso) ----------
+// ---------- 3) /api/me ----------
 app.get('/api/me', async (req, res) => {
   if (!req.session.user) return res.status(401).json({ logado: false });
-  const db = loadDB();
-  const registro = db[req.session.user.id] || null;
-  const { id, username, avatar } = req.session.user;
+
+  const { id, avatar } = req.session.user;
+  const registro = await getRegistro(id);
+
   const avatarUrl = avatar
     ? `https://cdn.discordapp.com/avatars/${id}/${avatar}.png?size=128`
     : `https://cdn.discordapp.com/embed/avatars/${Number(BigInt(id) % 5n)}.png`;
@@ -352,7 +356,6 @@ app.get('/api/me', async (req, res) => {
     membros = resultados.filter(Boolean);
   }
 
-  // Gera CSRF token
   if (!req.session.csrfToken) {
     req.session.csrfToken = security.generateCSRFToken();
   }
@@ -373,15 +376,13 @@ app.post('/api/vip', async (req, res) => {
   if (!req.session.user) return res.status(401).json({ erro: 'Não logado.' });
 
   const userId = req.session.user.id;
-  
-  // 1. RATE LIMITING
+
   const rateCheck = security.checkRateLimit(userId, 'vip-update');
   if (!rateCheck.allowed) {
     await security.logAudit('Rate Limit Violado', userId, { endpoint: '/api/vip', reason: rateCheck.reason });
     return res.status(429).json({ erro: rateCheck.reason });
   }
 
-  // 2. CSRF PROTECTION
   if (!security.verifyCSRFToken(req.body.csrfToken, req.session.csrfToken)) {
     await security.logAudit('CSRF Token Inválido', userId, { endpoint: '/api/vip' });
     return res.status(403).json({ erro: 'Token de segurança inválido.' });
@@ -389,113 +390,80 @@ app.post('/api/vip', async (req, res) => {
 
   const { nome, cor, cor2, gradiente } = req.body;
   const nomeClean = security.sanitizeInput(nome);
-  
-  // 3. INPUT VALIDATION
+
   if (!nomeClean || nomeClean.length < 3 || nomeClean.length > 32) {
-    await security.logAudit('Validação Falhou', userId, { motivo: 'Nome inválido', nome: nome });
+    await security.logAudit('Validação Falhou', userId, { motivo: 'Nome inválido', nome });
     return res.status(400).json({ erro: 'Nome precisa ter entre 3 e 32 caracteres.' });
   }
-  
+
   if (!security.validateHexColor(cor) || (gradiente && !security.validateHexColor(cor2 || ''))) {
     await security.logAudit('Validação Falhou', userId, { motivo: 'Cor HEX inválida' });
     return res.status(400).json({ erro: 'Cor HEX inválida.' });
   }
 
-  const db = loadDB();
+  const registro = (await getRegistro(userId)) || { roleId: null, channelId: null, membros: [] };
   const headers = headersBot;
 
   const corInt = parseInt(cor.replace('#', ''), 16);
   const corPayload = gradiente
-    ? {
-        colors: {
-          primary_color: corInt,
-          secondary_color: parseInt(cor2.replace('#', ''), 16),
-          tertiary_color: null,
-        },
-      }
-    : {
-        colors: { primary_color: corInt, secondary_color: null, tertiary_color: null },
-      };
+    ? { colors: { primary_color: corInt, secondary_color: parseInt(cor2.replace('#', ''), 16), tertiary_color: null } }
+    : { colors: { primary_color: corInt, secondary_color: null, tertiary_color: null } };
 
   try {
-    let roleId = db[userId]?.roleId;
+    let { roleId } = registro;
     let role;
 
     if (roleId) {
-      const checkRes = await fetch(
-        `https://discord.com/api/v10/guilds/${GUILD_ID}/roles`,
-        { headers }
-      );
+      const checkRes = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/roles`, { headers });
       const roles = await checkRes.json();
       role = roles.find((r) => r.id === roleId);
     }
 
     if (role) {
-      // 6. PERMISSION CHECK - Verifica se usuário realmente tem o cargo
       const hasRole = await security.verifyUserHasRole(userId, roleId, headers);
       if (!hasRole) {
-        // Se não tem, re-adiciona
         const addRes = await fetch(
           `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${userId}/roles/${roleId}`,
           { method: 'PUT', headers }
         );
-        if (!addRes.ok) {
-          await security.logAudit('Erro ao Re-adicionar Cargo', userId, { roleId });
-        }
+        if (!addRes.ok) await security.logAudit('Erro ao Re-adicionar Cargo', userId, { roleId });
       }
 
-      // edita
-      const editRes = await fetch(
-        `https://discord.com/api/v10/guilds/${GUILD_ID}/roles/${roleId}`,
-        {
-          method: 'PATCH',
-          headers,
-          body: JSON.stringify({ name: nomeClean, ...corPayload }),
-        }
-      );
+      const editRes = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/roles/${roleId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ name: nomeClean, ...corPayload }),
+      });
       if (!editRes.ok) throw new Error(await editRes.text());
-      // Salva no banco de dados pra manter consistência
-      db[userId] = { roleId, membros: db[userId]?.membros || [] };
-      saveDB(db);
+
+      await saveRegistro(userId, { roleId, channelId: registro.channelId, membros: registro.membros });
       await reposicionarCargoVIPAcimaDosAntigos(roleId);
-      await aplicarCargoCompartilhado(userId, roleId, db[userId].membros);
-
-      // 4. AUDIT LOG
+      await aplicarCargoCompartilhado(roleId, registro.membros);
       await security.logAudit('Cargo Atualizado', userId, { nomeAntigo: role.name, nomeNovo: nomeClean, roleId, cor });
-
     } else {
-      // cria
-      const createRes = await fetch(
-        `https://discord.com/api/v10/guilds/${GUILD_ID}/roles`,
-        {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            name: nomeClean,
-            ...corPayload,
-            permissions: '0',
-            hoist: true,
-            mentionable: false,
-          }),
-        }
-      );
+      const createRes = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/roles`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          name: nomeClean,
+          ...corPayload,
+          permissions: '0',
+          hoist: true,
+          mentionable: false,
+        }),
+      });
       if (!createRes.ok) throw new Error(await createRes.text());
       const novoCargo = await createRes.json();
       roleId = novoCargo.id;
 
-      // aplica no dono
       const addRes = await fetch(
         `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${userId}/roles/${roleId}`,
         { method: 'PUT', headers }
       );
       if (!addRes.ok) throw new Error(await addRes.text());
 
-      db[userId] = { roleId, membros: [] };
-      saveDB(db);
+      await saveRegistro(userId, { roleId, channelId: null, membros: [] });
       await reposicionarCargoVIPAcimaDosAntigos(roleId);
-      await aplicarCargoCompartilhado(userId, roleId, db[userId].membros);
-
-      // 4. AUDIT LOG
       await security.logAudit('Cargo Criado', userId, { nome: nomeClean, roleId, cor });
     }
 
@@ -504,13 +472,7 @@ app.post('/api/vip', async (req, res) => {
     console.error(err);
     const texto = String(err.message || '');
     const precisaBoost = texto.includes('secondary_color') || texto.includes('BOOST');
-    
-    // Log de erro
-    await security.logAudit('Erro ao Criar/Editar Cargo', userId, { 
-      erro: texto.slice(0, 200),
-      precisaBoost 
-    });
-
+    await security.logAudit('Erro ao Criar/Editar Cargo', userId, { erro: texto.slice(0, 200), precisaBoost });
     res.status(500).json({
       erro: precisaBoost
         ? 'Cor com gradiente exige que o servidor tenha Nível de Boost 2 ou superior.'
@@ -519,14 +481,13 @@ app.post('/api/vip', async (req, res) => {
   }
 });
 
-// ---------- 5) Buscar membros do servidor pelo nome (pra compartilhar o cargo) ----------
+// ---------- 5) Buscar membros pelo nome ----------
 app.get('/api/buscar-membros', async (req, res) => {
   if (!req.session.user) return res.status(401).json({ erro: 'Não logado.' });
   const q = (req.query.q || '').trim();
   if (q.length < 2) return res.json({ resultados: [] });
 
-  const db = loadDB();
-  const registro = db[req.session.user.id];
+  const registro = await getRegistro(req.session.user.id);
   if (!registro?.roleId) {
     return res.status(400).json({ erro: 'Você precisa criar seu cargo VIP primeiro.' });
   }
@@ -540,7 +501,7 @@ app.get('/api/buscar-membros', async (req, res) => {
     const membros = await r.json();
 
     const resultados = membros
-      .filter((m) => m.user.id !== req.session.user.id) // não pode compartilhar consigo mesmo
+      .filter((m) => m.user.id !== req.session.user.id)
       .map((m) => ({
         id: m.user.id,
         displayName: m.nick || m.user.global_name || m.user.username,
@@ -557,13 +518,12 @@ app.get('/api/buscar-membros', async (req, res) => {
   }
 });
 
-// ---------- 6) Compartilhar o cargo com outro membro ----------
+// ---------- 6) Compartilhar cargo ----------
 app.post('/api/vip/compartilhar', async (req, res) => {
   if (!req.session.user) return res.status(401).json({ erro: 'Não logado.' });
-  
+
   const userId = req.session.user.id;
-  
-  // Rate limiting
+
   const rateCheck = security.checkRateLimit(userId, 'compartilhar');
   if (!rateCheck.allowed) {
     await security.logAudit('Rate Limit Violado', userId, { endpoint: '/api/vip/compartilhar' });
@@ -571,24 +531,21 @@ app.post('/api/vip/compartilhar', async (req, res) => {
   }
 
   const { targetId } = req.body;
-  
-  // Validar ID
+
   if (!security.validateUserId(targetId || '')) {
     await security.logAudit('Validação Falhou', userId, { motivo: 'ID inválido', targetId });
     return res.status(400).json({ erro: 'ID de usuário inválido.' });
   }
-  
+
   if (targetId === userId) {
     return res.status(400).json({ erro: 'Você já tem seu próprio cargo.' });
   }
 
-  const db = loadDB();
-  const registro = db[userId];
+  const registro = await getRegistro(userId);
   if (!registro?.roleId) {
     return res.status(400).json({ erro: 'Você precisa criar seu cargo VIP primeiro.' });
   }
-  
-  // 8. MEMBER LIMIT
+
   if (registro.membros.length >= 10) {
     await security.logAudit('Limite de Compartilhados Atingido', userId, { targetId, limite: 10 });
     return res.status(400).json({ erro: 'Limite de 10 pessoas por cargo compartilhado atingido.' });
@@ -602,12 +559,10 @@ app.post('/api/vip/compartilhar', async (req, res) => {
     if (!addRes.ok) throw new Error(await addRes.text());
 
     if (!registro.membros.includes(targetId)) registro.membros.push(targetId);
-    saveDB(db);
+    await saveRegistro(userId, registro);
 
     const membro = await buscarMembro(targetId);
-
     await security.logAudit('Cargo Compartilhado', userId, { targetId, targetNome: membro?.displayName });
-
     res.json({ ok: true, membro });
   } catch (err) {
     console.error(err);
@@ -616,13 +571,12 @@ app.post('/api/vip/compartilhar', async (req, res) => {
   }
 });
 
-// ---------- 7) Remover o cargo de alguém que recebeu compartilhado ----------
+// ---------- 7) Revogar cargo compartilhado ----------
 app.post('/api/vip/revogar', async (req, res) => {
   if (!req.session.user) return res.status(401).json({ erro: 'Não logado.' });
-  
+
   const userId = req.session.user.id;
-  
-  // Rate limiting
+
   const rateCheck = security.checkRateLimit(userId, 'revogar');
   if (!rateCheck.allowed) {
     await security.logAudit('Rate Limit Violado', userId, { endpoint: '/api/vip/revogar' });
@@ -630,15 +584,13 @@ app.post('/api/vip/revogar', async (req, res) => {
   }
 
   const { targetId } = req.body;
-  
-  // Validar ID
+
   if (!security.validateUserId(targetId || '')) {
     await security.logAudit('Validação Falhou', userId, { motivo: 'ID inválido', targetId });
     return res.status(400).json({ erro: 'ID de usuário inválido.' });
   }
 
-  const db = loadDB();
-  const registro = db[userId];
+  const registro = await getRegistro(userId);
   if (!registro?.roleId) {
     return res.status(400).json({ erro: 'Você não tem cargo VIP.' });
   }
@@ -651,11 +603,9 @@ app.post('/api/vip/revogar', async (req, res) => {
     if (!delRes.ok) throw new Error(await delRes.text());
 
     registro.membros = registro.membros.filter((id) => id !== targetId);
-    saveDB(db);
-    
-    // Audit log
+    await saveRegistro(userId, registro);
+
     await security.logAudit('Cargo Revogado', userId, { targetId });
-    
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -664,21 +614,19 @@ app.post('/api/vip/revogar', async (req, res) => {
   }
 });
 
-// ---------- 8) Criar ou atualizar a call de voz privada ----------
+// ---------- 8) Criar ou atualizar call de voz privada ----------
 app.post('/api/vip/call', async (req, res) => {
   if (!req.session.user) return res.status(401).json({ erro: 'Não logado.' });
 
   const userId = req.session.user.id;
-  
-  // Rate limiting
+
   const rateCheck = security.checkRateLimit(userId, 'call-update');
   if (!rateCheck.allowed) {
     await security.logAudit('Rate Limit Violado', userId, { endpoint: '/api/vip/call' });
     return res.status(429).json({ erro: rateCheck.reason });
   }
 
-  const db = loadDB();
-  const registro = db[userId];
+  const registro = await getRegistro(userId);
   if (!registro?.roleId) {
     return res.status(400).json({ erro: 'Você precisa criar seu cargo VIP primeiro.' });
   }
@@ -692,19 +640,17 @@ app.post('/api/vip/call', async (req, res) => {
   }
 
   const permissionOverwrites = [
-    { id: GUILD_ID, type: 0, deny: PERM_NEGAR_TODO_MUNDO, allow: '0' }, // @everyone
-    { id: registro.roleId, type: 0, allow: PERM_PERMITIR_CARGO, deny: '0' }, // quem tem o cargo (dono + compartilhados)
-    { id: userId, type: 1, allow: PERM_PERMITIR_DONO, deny: '0' }, // controle total pro dono
+    { id: GUILD_ID, type: 0, deny: PERM_NEGAR_TODO_MUNDO, allow: '0' },
+    { id: registro.roleId, type: 0, allow: PERM_PERMITIR_CARGO, deny: '0' },
+    { id: userId, type: 1, allow: PERM_PERMITIR_DONO, deny: '0' },
   ];
 
   try {
-    let channelId = registro.channelId;
+    let { channelId } = registro;
     let canalExiste = false;
 
     if (channelId) {
-      const checkRes = await fetch(`https://discord.com/api/v10/channels/${channelId}`, {
-        headers: headersBot,
-      });
+      const checkRes = await fetch(`https://discord.com/api/v10/channels/${channelId}`, { headers: headersBot });
       canalExiste = checkRes.ok;
     }
 
@@ -712,36 +658,26 @@ app.post('/api/vip/call', async (req, res) => {
       const editRes = await fetch(`https://discord.com/api/v10/channels/${channelId}`, {
         method: 'PATCH',
         headers: headersBot,
+        body: JSON.stringify({ name: nomeCall, permission_overwrites: permissionOverwrites }),
+      });
+      if (!editRes.ok) throw new Error(await editRes.text());
+      await security.logAudit('Call Atualizada', userId, { channelId, nome: nomeCall });
+    } else {
+      const createRes = await fetch(`https://discord.com/api/v10/guilds/${GUILD_ID}/channels`, {
+        method: 'POST',
+        headers: headersBot,
         body: JSON.stringify({
           name: nomeCall,
+          type: 2,
+          parent_id: CATEGORIA_VOZ_ID,
           permission_overwrites: permissionOverwrites,
         }),
       });
-      if (!editRes.ok) throw new Error(await editRes.text());
-      
-      // Audit log
-      await security.logAudit('Call Atualizada', userId, { channelId, nome: nomeCall });
-    } else {
-      const createRes = await fetch(
-        `https://discord.com/api/v10/guilds/${GUILD_ID}/channels`,
-        {
-          method: 'POST',
-          headers: headersBot,
-          body: JSON.stringify({
-            name: nomeCall,
-            type: 2, // canal de voz
-            parent_id: CATEGORIA_VOZ_ID,
-            permission_overwrites: permissionOverwrites,
-          }),
-        }
-      );
       if (!createRes.ok) throw new Error(await createRes.text());
       const canal = await createRes.json();
       channelId = canal.id;
       registro.channelId = channelId;
-      saveDB(db);
-      
-      // Audit log
+      await saveRegistro(userId, registro);
       await security.logAudit('Call Criada', userId, { channelId, nome: nomeCall });
     }
 
@@ -750,13 +686,7 @@ app.post('/api/vip/call', async (req, res) => {
     console.error(err);
     const texto = String(err.message || '');
     const semPermissao = texto.includes('Missing Permissions') || texto.includes('50013');
-    
-    // Audit log de erro
-    await security.logAudit('Erro ao Criar/Atualizar Call', userId, { 
-      erro: texto.slice(0, 200),
-      semPermissao 
-    });
-
+    await security.logAudit('Erro ao Criar/Atualizar Call', userId, { erro: texto.slice(0, 200), semPermissao });
     res.status(500).json({
       erro: semPermissao
         ? 'O bot não tem permissão "Manage Channels", ou a categoria de voz está fora do alcance dele na hierarquia.'
@@ -765,6 +695,30 @@ app.post('/api/vip/call', async (req, res) => {
   }
 });
 
-app.listen(PORT || 3000, () => {
-  console.log(`Site VIP rodando em ${SITE_URL || `http://localhost:${PORT || 3000}`}`);
-});
+// ---------- Ping (mantém Render acordado) ----------
+app.get('/ping', (req, res) => res.status(200).send('pong'));
+
+// ---------- Inicia servidor ----------
+initDB()
+  .then(() => {
+    app.listen(PORT || 3000, () => {
+      console.log(`Site VIP rodando em ${SITE_URL || `http://localhost:${PORT || 3000}`}`);
+    });
+
+    // Self-ping a cada 14 min em produção
+    if (process.env.NODE_ENV === 'production' && SITE_URL) {
+      setInterval(async () => {
+        try {
+          const res = await fetch(`${SITE_URL}/ping`);
+          console.log(`[Self-ping] ${new Date().toISOString()} — status ${res.status}`);
+        } catch (err) {
+          console.warn(`[Self-ping] Falhou: ${err.message}`);
+        }
+      }, 14 * 60 * 1000);
+      console.log('[Self-ping] Ativado — ping a cada 14 minutos.');
+    }
+  })
+  .catch((err) => {
+    console.error('[DB] Falha ao inicializar banco:', err);
+    process.exit(1);
+  });
