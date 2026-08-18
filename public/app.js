@@ -194,7 +194,6 @@ function configurarAbas(cargoAtual) {
       btnLeaderboard.classList.add('ativa');
       btnLeaderboard.setAttribute('aria-selected', 'true');
       btnVip.setAttribute('aria-selected', 'false');
-      carregarLeaderboard();
     } else if (aba === 'vip') {
       abaVip.classList.remove('oculto');
       btnVip.classList.add('ativa');
@@ -330,6 +329,9 @@ async function iniciar() {
 
   // Inicializa a roda de cores antecipadamente para evitar layout shift ao trocar de aba
   inicializarRoda();
+
+  // Carrega o ranking antecipadamente para os dados já estarem prontos
+  carregarLeaderboard();
 
   // Preenche lista de membros compartilhados (painel VIP)
   (data.membros || []).forEach((m) => adicionarNaLista(m));
