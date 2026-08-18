@@ -202,6 +202,7 @@ app.get('/auth/login', (req, res) => {
         response_type: 'code',
         scope: 'identify',
         state,
+        prompt: 'login',
       });
 
       res.redirect(`https://discord.com/api/oauth2/authorize?${params.toString()}`);
