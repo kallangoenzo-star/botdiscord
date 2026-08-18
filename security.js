@@ -163,15 +163,15 @@ function verifyOAuth2State(state, sessionState) {
   // Validação simples e segura do state
   if (!state || !sessionState) return false;
   if (typeof state !== 'string' || typeof sessionState !== 'string') return false;
-  
+
+  const a = Buffer.from(state, 'utf8');
+  const b = Buffer.from(sessionState, 'utf8');
+
+  if (a.length !== b.length) return false;
+
   try {
-    // Usa timing-safe equal para comparação segura
-    return crypto.timingSafeEqual(
-      Buffer.from(state, 'utf8'),
-      Buffer.from(sessionState, 'utf8')
-    );
+    return crypto.timingSafeEqual(a, b);
   } catch (err) {
-    // Se der erro (buffers tamanho diferente), retorna false
     console.error('Erro ao verificar OAuth2 State:', err.message);
     return false;
   }

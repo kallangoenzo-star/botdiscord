@@ -89,6 +89,7 @@ async function buscarMembro(userId) {
 }
 
 const app = express();
+app.set('trust proxy', 1); // Necessário em Railway/HTTPS para cookies e OAuth funcionar corretamente
 app.use(security.requireHTTPS);
 app.use(security.securityHeaders);
 app.use(express.json({ limit: '1mb' }));
@@ -98,13 +99,12 @@ app.use(
     secret: SESSION_SECRET || 'troque-isso-no-env',
     resave: false,
     saveUninitialized: false,
-    cookie: { 
-      maxAge: 1000 * 60 * 60, 
-      // Em produção: secure + httpOnly + strict
-      // Em desenvolvimento (localhost): só httpOnly
+    proxy: process.env.NODE_ENV === 'production',
+    cookie: {
+      maxAge: 1000 * 60 * 60,
       secure: process.env.NODE_ENV === 'production',
-      httpOnly: true, 
-      sameSite: 'lax', // Lax em dev, strict em prod
+      httpOnly: true,
+      sameSite: 'lax',
     },
   })
 );
