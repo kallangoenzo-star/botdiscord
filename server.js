@@ -56,6 +56,8 @@ const db = createClient({
 
 // Garante que a tabela existe ao iniciar
 async function initDB() {
+  console.log('[DB] TURSO_URL:', TURSO_URL ? TURSO_URL.slice(0, 30) + '...' : 'NÃO DEFINIDO');
+  console.log('[DB] TURSO_AUTH_TOKEN:', TURSO_AUTH_TOKEN ? 'definido (' + TURSO_AUTH_TOKEN.length + ' chars)' : 'NÃO DEFINIDO');
   await db.execute(`
     CREATE TABLE IF NOT EXISTS vip_roles (
       user_id   TEXT PRIMARY KEY,
