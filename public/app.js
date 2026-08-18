@@ -164,6 +164,32 @@ async function iniciar() {
   atualizarSwatches();
   atualizarPreview();
 
+  // Verifica erros de query string
+  const params = new URLSearchParams(window.location.search);
+  const erro = params.get('erro');
+  const msgDiv = document.getElementById('mensagem');
+  
+  if (erro === 'nao_eh_membro') {
+    msgDiv.textContent = '❌ Você não é membro deste servidor. Precisa estar no servidor do Discord para usar este bot.';
+    msgDiv.className = 'mensagem erro';
+    msgDiv.style.display = 'block';
+    return;
+  }
+  
+  if (erro === 'state_invalido') {
+    msgDiv.textContent = '❌ Erro de segurança no login. Tenta novamente.';
+    msgDiv.className = 'mensagem erro';
+    msgDiv.style.display = 'block';
+    return;
+  }
+  
+  if (erro === 'token_falhou') {
+    msgDiv.textContent = '❌ Falha ao comunicar com Discord. Tenta de novo.';
+    msgDiv.className = 'mensagem erro';
+    msgDiv.style.display = 'block';
+    return;
+  }
+
   const res = await fetch('/api/me');
   const data = await res.json();
   if (!data.logado) return;

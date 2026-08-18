@@ -303,6 +303,18 @@ app.get('/auth/callback', async (req, res) => {
     });
     const user = await userRes.json();
 
+    // Verifica se o usuário é membro do servidor
+    const memberRes = await fetch(
+      `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${user.id}`,
+      { headers: headersBot }
+    );
+    
+    if (!memberRes.ok) {
+      console.warn('[OAuth2] Usuário não é membro do servidor:', user.username, user.id);
+      await security.logAudit('Login Recusado - Não é Membro', user.id, { username: user.username, motivo: 'Não é membro do servidor' });
+      return res.redirect('/?erro=nao_eh_membro');
+    }
+
     req.session.user = {
       id: user.id,
       username: user.username,
