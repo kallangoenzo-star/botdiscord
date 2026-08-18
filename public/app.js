@@ -324,8 +324,8 @@ async function iniciar() {
   const previewAvatar = document.getElementById('previewAvatar');
   if (previewAvatar) previewAvatar.src = data.avatarUrl;
 
-  // Configura abas com base em se tem cargo VIP
-  configurarAbas(data.cargoAtual);
+  // Configura abas com base em se tem cargo VIP de acesso
+  configurarAbas(data.temCargoVip);
 
   // Preenche lista de membros compartilhados (painel VIP)
   (data.membros || []).forEach((m) => adicionarNaLista(m));

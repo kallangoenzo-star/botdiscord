@@ -367,6 +367,24 @@ app.get('/api/me', async (req, res) => {
     req.session.csrfToken = security.generateCSRFToken();
   }
 
+  // Verifica se o usuário tem o cargo VIP de acesso (VIP_ROLE_ID) no Discord
+  const VIP_ROLE_ID = process.env.VIP_ROLE_ID;
+  let temCargoVip = false;
+  if (VIP_ROLE_ID) {
+    try {
+      const memberRes = await fetch(
+        `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${id}`,
+        { headers: headersBot }
+      );
+      if (memberRes.ok) {
+        const member = await memberRes.json();
+        temCargoVip = Array.isArray(member.roles) && member.roles.includes(VIP_ROLE_ID);
+      }
+    } catch {
+      // se falhar a checagem, mantém false
+    }
+  }
+
   res.json({
     logado: true,
     user: req.session.user,
@@ -375,6 +393,7 @@ app.get('/api/me', async (req, res) => {
     callAtual: registro?.channelId || null,
     membros,
     csrfToken: req.session.csrfToken,
+    temCargoVip,
   });
 });
 
