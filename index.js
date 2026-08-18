@@ -147,6 +147,9 @@ const commands = [
     .addIntegerOption((opt) =>
       opt.setName('quantidade').setDescription('Quantidade de XP (1-9999)').setRequired(true).setMinValue(1).setMaxValue(9999)
     ),
+  new SlashCommandBuilder()
+    .setName('boosterembed')
+    .setDescription('[ADMIN] Envia mensagem embed no canal de Booster.'),
 ].map((c) => c.toJSON());
 
 async function registerCommands() {
@@ -358,6 +361,56 @@ client.on(Events.InteractionCreate, async (interaction) => {
     } catch (err) {
       console.error('[OrderXPRemove] Erro:', err);
       await interaction.reply({ content: '❌ Erro ao remover XP.', flags: 64 });
+    }
+  }
+
+  // /boosterembed — envia mensagem embed no canal de Booster (só admin)
+  if (interaction.commandName === 'boosterembed') {
+    const ADMIN_ID = process.env.ADMIN_ID;
+    const BOOSTER_CHANNEL_ID = '1539158906171817994';
+
+    if (interaction.user.id !== ADMIN_ID) {
+      return interaction.reply({ content: '❌ Você não tem permissão para usar esse comando.', flags: 64 });
+    }
+
+    try {
+      const boosterChannel = await client.channels.fetch(BOOSTER_CHANNEL_ID);
+      if (!boosterChannel) {
+        return interaction.reply({ content: '❌ Canal de Booster não encontrado.', flags: 64 });
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0xff6b9d)
+        .setTitle('🚀 BOOSTER - Benefícios Exclusivos')
+        .setDescription(
+          'Torne-se um Booster do servidor e desfrute de benefícios exclusivos que valorizam sua experiência!'
+        )
+        .setThumbnail('https://i.imgur.com/KhQRZ4n.png')
+        .addFields(
+          {
+            name: '📸 Envio de Mídias',
+            value: 'Liberdade para postar imagens e GIFs no chat geral.',
+            inline: false,
+          },
+          {
+            name: '🎨 Cargo Próprio',
+            value: 'Crie e personalize seu próprio cargo com nome e cor exclusivos.',
+            inline: false,
+          },
+          {
+            name: '✨ Destaque Visual',
+            value: 'Seu nome destacado no chat e na lista de membros.',
+            inline: false,
+          },
+        )
+        .setFooter({ text: 'Apoie o servidor e ganhe recompensas especiais!' })
+        .setTimestamp();
+
+      await boosterChannel.send({ embeds: [embed] });
+      await interaction.reply({ content: '✅ Mensagem de Booster enviada com sucesso!', flags: 64 });
+    } catch (err) {
+      console.error('[BoosterEmbed] Erro:', err);
+      await interaction.reply({ content: '❌ Erro ao enviar mensagem de Booster.', flags: 64 });
     }
   }
 
