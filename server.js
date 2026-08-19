@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
+const crypto = require('crypto');
 const security = require('./security');
 const { createClient } = require('@libsql/client');
 
@@ -193,6 +194,12 @@ async function buscarMembro(userId) {
 
 // ---------- Express ----------
 const app = express();
+// Garante que SESSION_SECRET está definido em produção
+if (process.env.NODE_ENV === 'production' && !SESSION_SECRET) {
+  console.error('[FATAL] SESSION_SECRET não definido em produção. Encerrando.');
+  process.exit(1);
+}
+
 app.set('trust proxy', 1);
 app.use(security.requireHTTPS);
 app.use(security.securityHeaders);
@@ -200,7 +207,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(
   session({
-    secret: SESSION_SECRET || 'troque-isso-no-env',
+    secret: SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
     resave: false,
     saveUninitialized: false,
     proxy: process.env.NODE_ENV === 'production',
@@ -339,7 +346,7 @@ app.get('/auth/callback', async (req, res) => {
     let pais = 'desconhecido';
     let cidade = 'desconhecido';
     try {
-      const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=country,city,status&lang=pt-BR`);
+      const geoRes = await fetch(`https://ip-api.com/json/${encodeURIComponent(ip)}?fields=country,city,status&lang=pt-BR`);
       const geo = await geoRes.json();
       if (geo.status === 'success') {
         pais = geo.country || 'desconhecido';
@@ -372,6 +379,9 @@ app.get('/auth/logout', (req, res) => {
 // ---------- 3) /api/me ----------
 app.get('/api/me', async (req, res) => {
   if (!req.session.user) return res.status(401).json({ logado: false });
+
+  const rateCheck = security.checkRateLimit(req.session.user.id, 'api-me');
+  if (!rateCheck.allowed) return res.status(429).json({ logado: false, erro: rateCheck.reason });
 
   const { id, avatar } = req.session.user;
   const registro = await getRegistro(id);
@@ -437,11 +447,17 @@ app.post('/api/vip', async (req, res) => {
     return res.status(403).json({ erro: 'Token de segurança inválido.' });
   }
 
+  // Verifica se usuário tem cargo VIP de acesso
+  const temVip = await security.verifyUserHasVipAccess(userId, headersBot);
+  if (!temVip) {
+    return res.status(403).json({ erro: 'Você precisa ter o cargo VIP para usar esta função.' });
+  }
+
   const { nome, cor, cor2, gradiente } = req.body;
   const nomeClean = security.sanitizeInput(nome);
 
   if (!nomeClean || nomeClean.length < 3 || nomeClean.length > 32) {
-    await security.logAudit('Validação Falhou', userId, { motivo: 'Nome inválido', nome });
+    await security.logAudit('Validação Falhou', userId, { motivo: 'Nome inválido', nome: nomeClean });
     return res.status(400).json({ erro: 'Nome precisa ter entre 3 e 32 caracteres.' });
   }
 
@@ -533,7 +549,11 @@ app.post('/api/vip', async (req, res) => {
 // ---------- 5) Buscar membros pelo nome ----------
 app.get('/api/buscar-membros', async (req, res) => {
   if (!req.session.user) return res.status(401).json({ erro: 'Não logado.' });
-  const q = (req.query.q || '').trim();
+
+  const rateCheck = security.checkRateLimit(req.session.user.id, 'buscar-membros');
+  if (!rateCheck.allowed) return res.status(429).json({ erro: rateCheck.reason });
+
+  const q = security.sanitizeInput((req.query.q || '').trim());
   if (q.length < 2) return res.json({ resultados: [] });
 
   const registro = await getRegistro(req.session.user.id);
@@ -654,6 +674,11 @@ app.post('/api/vip/revogar', async (req, res) => {
     return res.status(400).json({ erro: 'Você não tem cargo VIP.' });
   }
 
+  // Verifica se targetId realmente está na lista antes de chamar a API
+  if (!registro.membros.includes(targetId)) {
+    return res.status(400).json({ erro: 'Essa pessoa não está na sua lista de compartilhamento.' });
+  }
+
   try {
     const delRes = await fetch(
       `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${targetId}/roles/${registro.roleId}`,
@@ -683,6 +708,17 @@ app.post('/api/vip/call', async (req, res) => {
   if (!rateCheck.allowed) {
     await security.logAudit('Rate Limit Violado', userId, { endpoint: '/api/vip/call' });
     return res.status(429).json({ erro: rateCheck.reason });
+  }
+
+  if (!security.verifyCSRFToken(req.body.csrfToken, req.session.csrfToken)) {
+    await security.logAudit('CSRF Token Inválido', userId, { endpoint: '/api/vip/call' });
+    return res.status(403).json({ erro: 'Token de segurança inválido.' });
+  }
+
+  // Verifica se usuário tem cargo VIP de acesso
+  const temVip = await security.verifyUserHasVipAccess(userId, headersBot);
+  if (!temVip) {
+    return res.status(403).json({ erro: 'Você precisa ter o cargo VIP para usar esta função.' });
   }
 
   const registro = await getRegistro(userId);
@@ -764,39 +800,47 @@ app.get('/api/leaderboard', async (req, res) => {
       'SELECT user_id, xp, level FROM xp ORDER BY xp DESC LIMIT 20'
     );
 
-    // Busca nomes e avatares dos membros do Discord em paralelo
-    const entries = await Promise.all(
-      top.rows.map(async (row, index) => {
-        const userId = row.user_id;
-        let displayName = userId;
-        let avatarUrl = `https://cdn.discordapp.com/embed/avatars/0.png`;
+    // Busca nomes e avatares dos membros do Discord sequencialmente para evitar rate limiting
+    const entries = [];
+    for (let i = 0; i < top.rows.length; i++) {
+      const row = top.rows[i];
+      const userId = row.user_id;
+      let displayName = userId;
+      let avatarUrl = `https://cdn.discordapp.com/embed/avatars/0.png`;
 
-        try {
-          const r = await fetch(
-            `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${userId}`,
-            { headers: headersBot }
-          );
-          if (r.ok) {
-            const m = await r.json();
-            displayName = m.nick || m.user.global_name || m.user.username;
-            avatarUrl = m.user.avatar
-              ? `https://cdn.discordapp.com/avatars/${userId}/${m.user.avatar}.png?size=64`
-              : `https://cdn.discordapp.com/embed/avatars/${Number(BigInt(userId) % 5n)}.png`;
-          }
-        } catch {
-          // mantém fallback
+      try {
+        const r = await fetch(
+          `https://discord.com/api/v10/guilds/${GUILD_ID}/members/${userId}`,
+          { headers: headersBot }
+        );
+        if (r.ok) {
+          const m = await r.json();
+          displayName = m.nick || m.user.global_name || m.user.username;
+          avatarUrl = m.user.avatar
+            ? `https://cdn.discordapp.com/avatars/${userId}/${m.user.avatar}.png?size=64`
+            : `https://cdn.discordapp.com/embed/avatars/${Number(BigInt(userId) % 5n)}.png`;
+        } else {
+          console.warn(`[Leaderboard] Falha ao buscar membro ${userId}:`, r.status);
         }
+      } catch (err) {
+        console.warn(`[Leaderboard] Erro ao buscar membro ${userId}:`, err.message);
+        // mantém fallback
+      }
 
-        return {
-          posicao: index + 1,
-          userId,
-          displayName,
-          avatarUrl,
-          xp: Number(row.xp),
-          level: Number(row.level),
-        };
-      })
-    );
+      entries.push({
+        posicao: i + 1,
+        userId,
+        displayName,
+        avatarUrl,
+        xp: Number(row.xp),
+        level: Number(row.level),
+      });
+
+      // Pequeno delay para evitar rate limiting
+      if (i < top.rows.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
 
     // Posição do usuário logado (pode estar fora do top 20)
     const meuId = req.session.user.id;
